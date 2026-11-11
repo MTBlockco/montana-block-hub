@@ -1,5 +1,10 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 import { SUPABASE_URL, SUPABASE_KEY } from "./config.js";
+import { sayingFor } from "./sayings.js";
+
+const LOGO = "https://mtblock.com/cdn/shop/files/MONTANA_BLOCK_CO-02.png?v=1747022409&width=600";
+const logoImg = (cls) => `<img class="${cls}" src="${LOGO}" alt="Montana Block Co." onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'${cls}',textContent:'MONTANA BLOCK CO.',style:'font-family:Oswald,sans-serif;font-size:1.4rem;letter-spacing:.08em;text-align:center'}))">`;
+const MTNS = `<svg class="mtns" viewBox="0 0 400 26" preserveAspectRatio="none" aria-hidden="true"><path d="M0 26 L0 18 L40 8 L70 16 L110 2 L150 14 L185 6 L220 15 L260 4 L300 13 L335 7 L370 15 L400 9 L400 26 Z" fill="var(--bg)"/></svg>`;
 
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
@@ -11,6 +16,14 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ROLES = ["pending", "shop", "lead", "admin", "owner"];
 const ROLE_LABEL = { pending: "Pending", shop: "Shop", lead: "Lead", admin: "Admin", owner: "Owner" };
 const can = (min) => state.profile && ROLES.indexOf(state.profile.role) >= ROLES.indexOf(min);
+const canInv = () => state.profile && (state.profile.role === "owner" || state.profile.can_edit_inventory);
+const hm = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
+const timeOf = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+async function fnCall(name, body) {
+  const { data, error } = await sb.functions.invoke(name, { body });
+  if (error) { let msg = "Something went wrong"; try { msg = (await error.context.json()).error; } catch {} return { error: msg }; }
+  return data;
+}
 const JOB_STATUSES = ["Queued", "Milling", "Glue-up", "Machining", "Sanding", "Finishing", "QC", "Ready", "Shipped", "Hold"];
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
 const INV_CATS = ["Finished goods", "Board care", "Merch", "Lumber", "Finish", "Abrasives", "Hardware", "Shop supplies"];
@@ -141,8 +154,9 @@ async function start() {
 // ---------------------------------------------------------------- auth screens
 function renderLogin(msg = "") {
   $app.innerHTML = `
-  <div class="auth"><form class="card stack" id="login">
-    <div class="brand"><img src="icons/icon-192.png" alt=""> Montana Block Hub</div>
+  <div class="auth wood"><form class="card stack" id="login">
+    <div style="background:var(--walnut-2);border-radius:12px;padding:14px">${logoImg("logo")}</div>
+    <h2 style="text-align:center;margin:4px 0 0">Shop Hub</h2>
     <div><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required></div>
     <div><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
     <div class="error" id="err">${esc(msg)}</div>
@@ -163,8 +177,8 @@ function renderLogin(msg = "") {
 
 function renderPending() {
   $app.innerHTML = `
-  <div class="auth"><div class="card stack">
-    <div class="brand"><img src="icons/icon-192.png" alt=""> Montana Block Hub</div>
+  <div class="auth wood"><div class="card stack">
+    <div style="background:var(--walnut-2);border-radius:12px;padding:14px">${logoImg("logo")}</div>
     <p>Your account is set up, but it doesn't have access yet. Ask Mitchell to assign your role.</p>
     <button class="btn" id="out">Sign out</button>
   </div></div>`;
@@ -197,7 +211,7 @@ function renderChangePassword(forced) {
     });
   };
   if (forced) {
-    $app.innerHTML = `<div class="auth"><div class="card">${html}</div></div>`;
+    $app.innerHTML = `<div class="auth wood"><div class="card">${html}</div></div>`;
     wire($app, () => {});
   } else sheet(html, wire);
 }
@@ -209,8 +223,8 @@ function renderShell() {
     .join("");
   $app.innerHTML = `
   <div class="shell">
-    <nav class="sidebar"><div class="brand"><img src="icons/icon-192.png" alt=""> MB Hub</div>${nav("sidebar")}<div class="spacer"></div>
-      <div class="small muted" style="padding:0 12px">${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
+    <nav class="sidebar wood">${logoImg("logo")}${nav("sidebar")}<div class="spacer"></div>
+      <div class="small who">${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
     <main class="main" id="view"><div class="empty">Loading…</div></main>
     <nav class="tabbar">${Object.entries(VIEWS).filter(([k]) => k !== "more").map(([k, v]) =>
       `<button data-go="${k}" class="${state.view === k ? "active" : ""}">${v.icon}<span>${v.label}</span></button>`).join("")}</nav>
@@ -224,7 +238,7 @@ function renderShell() {
 }
 
 function topbar(title, actions = "") {
-  return `<div class="topbar"><div class="row"><div class="brand"><img src="icons/icon-192.png" alt=""></div><h1>${esc(title)}</h1></div>
+  return `<div class="topbar"><div class="row"><span class="logo-chip">${logoImg("logo-sm")}</span><h1>${esc(title)}</h1></div>
     <div class="row">${actions}<button class="btn icon sm" data-go-more aria-label="Account and team" title="Account">${I.more.replace("<svg", '<svg width="20" height="20"')}</button></div></div>`;
 }
 function wireTopbar(root) {
@@ -233,7 +247,7 @@ function wireTopbar(root) {
 
 // ---------------------------------------------------------------- data loaders
 async function loadProfiles() {
-  const { data } = await sb.from("profiles").select("id, full_name, email, title, role, active, daily_ai_limit").order("full_name");
+  const { data } = await sb.from("profiles").select("id, full_name, email, title, role, active, daily_ai_limit, can_edit_inventory").order("full_name");
   state.cache.profiles = data ?? [];
   return state.cache.profiles;
 }
@@ -255,8 +269,17 @@ async function renderHome(root) {
   const low = (inv.data ?? []).filter(isLow);
 
   root.innerHTML = `
-    ${topbar(`${greet}${first ? ", " + first : ""}`, can("admin") ? '<button class="btn sm" id="addAnn">+ Note</button>' : "")}
-    <div class="stack">
+    <section class="hero wood">
+      ${can("admin") ? '<div class="hero-actions"><button class="btn sm acct" id="addAnn" style="position:static">+ Note</button></div>' : ""}
+      <button class="btn icon sm acct" data-go-more aria-label="Account">${I.more.replace("<svg", '<svg width="20" height="20"')}</button>
+      ${logoImg("logo")}
+      <div class="greet">${greet}${first ? ", " + esc(first) : ""}</div>
+      <div class="rule"></div>
+      <p class="saying">${esc(sayingFor())}</p>
+      ${MTNS}
+    </section>
+    <div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
+    <div class="stack section">
       ${(ann.data ?? []).map((a) => `
         <div class="card">
           <div class="row between"><h3 style="margin:0">${a.pinned ? "📌 " : ""}${esc(a.title)}</h3>
@@ -278,9 +301,35 @@ async function renderHome(root) {
         : '<p class="muted small">Everything is above its reorder point.</p>'}
     </div>`;
   wireTopbar(root);
+  renderClock(root.querySelector("#clock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => editJob((jobs.data ?? []).find((j) => j.id === b.dataset.job))));
+}
+
+let clockTimer = null;
+async function renderClock(el, preset) {
+  const res = preset ?? await fnCall("timeclock", { action: "status" });
+  if (res.error) { el.innerHTML = `<div class="small error">${esc(res.error)}</div>`; return; }
+  const open = res.open;
+  clearInterval(clockTimer);
+  el.classList.toggle("on", !!open);
+  el.innerHTML = `
+    <div>
+      <div class="state"><span class="dot"></span>${open ? "On the clock" : "Off the clock"}</div>
+      ${open ? `<div class="timer" id="tmr">${hm(Date.now() - new Date(open.clock_in))}</div><div class="small muted">since ${timeOf(open.clock_in)}</div>`
+             : `<div class="small muted">${new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</div>`}
+    </div>
+    <button class="btn punch ${open ? "out" : "in"}" id="punch">${open ? "Clock out" : "Clock in"}</button>`;
+  if (open) clockTimer = setInterval(() => { const t = document.getElementById("tmr"); if (!t) return clearInterval(clockTimer); t.textContent = hm(Date.now() - new Date(open.clock_in)); }, 30000);
+  el.querySelector("#punch").onclick = async (e) => {
+    if (open && !confirm(`Clock out now? You've been on ${hm(Date.now() - new Date(open.clock_in))}.`)) return;
+    e.target.disabled = true; e.target.textContent = open ? "Clocking out…" : "Clocking in…";
+    const r = await fnCall("timeclock", { action: open ? "clock_out" : "clock_in" });
+    if (r.error) { toast(r.error); return renderClock(el); }
+    toast(r.note || (open ? "Clocked out. Have a good one!" : "Clocked in. Let's build something."));
+    renderClock(el, { open: r.open });
+  };
 }
 
 function jobRows(list) {
@@ -403,7 +452,7 @@ async function renderInventory(root) {
     (!q || [i.name, i.sku, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
   const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
-    ${topbar("Inventory", can("lead") ? '<button class="btn sm primary" id="new">+ Item</button>' : "")}
+    ${topbar("Inventory", canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button><button class="btn sm primary" id="new">+ Item</button>' : "")}
     <input id="q" placeholder="Search walnut, 8/4, finish…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
     <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
@@ -412,7 +461,7 @@ async function renderInventory(root) {
         <div class="row between">
           <div style="min-width:0" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
             <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
-          ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
+          ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>${canInv() ? '<button class="btn sm" data-set>Count</button>' : ""}</div>` : !canInv() ? `<div class="qty"><span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
           <div class="qty">
             <button class="btn icon sm" data-adj="-1" aria-label="Decrease">−</button>
             <span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>
@@ -425,9 +474,21 @@ async function renderInventory(root) {
   qEl.oninput = () => { invQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => { renderInventory(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { invCat = b.dataset.c; renderInventory(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editItem());
+  root.querySelector("#sync")?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Syncing…";
+    const r = await fnCall("shopify-inventory", { action: "sync" });
+    if (r.error) { toast(r.error); e.target.disabled = false; e.target.textContent = "Sync Shopify"; return; }
+    toast(`Synced ${r.synced} products from Shopify${r.removed ? `, removed ${r.removed}` : ""}`);
+    renderInventory(root);
+  });
+  root.querySelectorAll("[data-set]").forEach((b) => (b.onclick = (e) => {
+    e.stopPropagation();
+    setShopifyCount(items.find((i) => i.id === b.closest("[data-id]").dataset.id), root);
+  }));
   root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => {
     const it = items.find((i) => i.id === b.dataset.open);
-    if (it.source === "shopify") return toast("This count comes from Shopify. Change it in Shopify; the hub picks up the new count at the next sync.");
+    if (it.source === "shopify") return canInv() ? setShopifyCount(it, root) : toast("Product counts come from Shopify. Ask Mitchell, Brittany or Nate Jones to correct it.");
+    if (!canInv()) return toast("Only Mitchell, Brittany and Nate Jones can change inventory.");
     editItem(it);
   }));
   root.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
@@ -443,8 +504,29 @@ async function renderInventory(root) {
   }));
 }
 
+function setShopifyCount(item, listRoot) {
+  sheet(`
+    <form class="stack" id="f">
+      <h2>Correct count</h2>
+      <div><strong>${esc(item.name)}</strong>${item.sku ? ` <span class="badge">${esc(item.sku)}</span>` : ""}</div>
+      <p class="small muted" style="margin:0">The hub shows <strong>${Number(item.quantity)}</strong> available. Enter what's actually on the shelf. This updates Shopify right away and is logged under your name.</p>
+      <div><label>Counted on hand</label><input name="q" type="number" step="1" inputmode="numeric" value="${Number(item.quantity)}" required></div>
+      <div class="row"><button class="btn primary">Update Shopify</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (root, close) => {
+    const inp = root.querySelector("input"); inp.focus(); inp.select();
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const btn = e.target.querySelector(".primary"); btn.disabled = true; btn.textContent = "Updating…";
+      const r = await fnCall("shopify-inventory", { action: "set", id: item.id, quantity: Number(inp.value), expected: Number(item.quantity) });
+      if (r.error) { toast(r.error); btn.disabled = false; btn.textContent = "Update Shopify"; if (r.current !== undefined) { close(); renderInventory(listRoot); } return; }
+      toast(`Shopify updated: ${item.name} = ${r.quantity}`);
+      close(); renderInventory(listRoot);
+    };
+  });
+}
+
 function editItem(i = {}) {
-  const full = can("lead");
+  const full = canInv();
   sheet(`
     <form class="stack" id="f">
       <h2>${i.id ? esc(i.name) : "New inventory item"}</h2>
@@ -597,8 +679,9 @@ async function renderAsk(root) {
 async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
+    { k: "hours", label: "My hours" },
     ...(can("lead") ? [{ k: "suppliers", label: "Suppliers" }] : []),
-    ...(can("admin") ? [{ k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
+    ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
   root.innerHTML = `${topbar("More")}
     <div class="list">${sections.map((s) => `<div class="item" data-sec="${s.k}"><div class="title">${s.label}</div></div>`).join("")}</div>
@@ -608,7 +691,7 @@ async function renderMore(root) {
   const open = async (k) => {
     root.querySelectorAll("[data-sec]").forEach((el) => (el.style.borderColor = el.dataset.sec === k ? "var(--accent)" : ""));
     sec.innerHTML = '<div class="empty">Loading…</div>';
-    await ({ account: renderAccount, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
+    await ({ account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
   };
   root.querySelectorAll("[data-sec]").forEach((b) => (b.onclick = () => open(b.dataset.sec)));
   open("account");
@@ -624,6 +707,50 @@ async function renderAccount(root) {
   </div>`;
   root.querySelector("#pw").onclick = () => renderChangePassword(false);
   root.querySelector("#out").onclick = () => sb.auth.signOut();
+}
+
+// Week starts Monday, shop time
+function weekStart(offsetWeeks = 0) {
+  const d = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Denver" }));
+  d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + offsetWeeks * 7);
+  return d;
+}
+const entryMs = (e) => (e.clock_out ? new Date(e.clock_out) : new Date()) - new Date(e.clock_in);
+const sqBadge = (e) => e.square_status === "synced" ? '<span class="badge ok">Square ✓</span>' : e.square_status === "error" ? `<span class="badge bad" title="${esc(e.square_error)}">Square ✗</span>` : '<span class="badge">Not in Square yet</span>';
+
+async function renderMyHours(root) {
+  const since = weekStart(-1);
+  const { data } = await sb.from("time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
+  const thisWk = weekStart(0);
+  const tot = (list) => list.reduce((a, e) => a + entryMs(e), 0);
+  const cur = (data ?? []).filter((e) => new Date(e.clock_in) >= thisWk), prev = (data ?? []).filter((e) => new Date(e.clock_in) < thisWk);
+  root.innerHTML = `<div class="card stack">
+    <div class="row between"><h2 style="margin:0">My hours</h2><span class="badge">This week ${hm(tot(cur))}</span></div>
+    <p class="small muted" style="margin:0">Last week: ${hm(tot(prev))}. Payroll uses Square; if something looks wrong, tell Brittany.</p>
+    <table><tr><th>Day</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr>${(data ?? []).map((e) => `<tr>
+      <td>${new Date(e.clock_in).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</td>
+      <td>${timeOf(e.clock_in)}</td><td>${e.clock_out ? timeOf(e.clock_out) : '<span class="badge ok">On now</span>'}</td><td>${hm(entryMs(e))}</td><td>${sqBadge(e)}</td></tr>`).join("")
+      || '<tr><td colspan="5" class="muted">No punches in the last two weeks.</td></tr>'}</table></div>`;
+}
+
+async function renderTimeclockAdmin(root) {
+  await loadProfiles();
+  const since = weekStart(0);
+  const [{ data: open }, { data: week }] = await Promise.all([
+    sb.from("time_entries").select("*").is("clock_out", null),
+    sb.from("time_entries").select("*").gte("clock_in", since.toISOString()).order("clock_in", { ascending: false }),
+  ]);
+  const byUser = {};
+  (week ?? []).forEach((e) => { byUser[e.user_id] = (byUser[e.user_id] ?? 0) + entryMs(e); });
+  const issues = (week ?? []).filter((e) => e.square_status === "error");
+  root.innerHTML = `
+    <div class="card stack"><div class="row between"><h2 style="margin:0">On the clock now</h2><span class="badge ${open?.length ? "ok" : ""}">${open?.length ?? 0}</span></div>
+      ${(open ?? []).map((e) => `<div class="row between"><span>${esc(nameOf(e.user_id))}</span><span class="small muted">since ${timeOf(e.clock_in)} · ${hm(entryMs(e))}</span></div>`).join("") || '<p class="small muted" style="margin:0">Nobody is clocked in.</p>'}
+    </div>
+    <div class="card section"><h2>This week</h2>
+      <table><tr><th>Person</th><th>Hours</th></tr>${Object.entries(byUser).sort((a, b) => b[1] - a[1]).map(([id, ms]) => `<tr><td>${esc(nameOf(id))}</td><td>${hm(ms)}</td></tr>`).join("") || '<tr><td colspan="2" class="muted">No punches yet this week.</td></tr>'}</table>
+      ${issues.length ? `<p class="small error">${issues.length} punch${issues.length > 1 ? "es" : ""} didn't reach Square: ${issues.map((e) => esc(nameOf(e.user_id)) + " " + new Date(e.clock_in).toLocaleDateString([], { month: "short", day: "numeric" })).join(", ")}. Fix those in Square Team.</p>` : ""}
+    </div>`;
 }
 
 async function renderSuppliers(root) {
@@ -741,6 +868,7 @@ async function renderTeam(root) {
           <div><label>Ask Claude questions per day</label><input name="daily_ai_limit" type="number" min="0" max="200" value="${p.daily_ai_limit}"></div>
         </div>
         <label class="row" style="color:var(--text)"><input type="checkbox" name="active" style="width:auto;min-height:0" ${p.active ? "checked" : ""}> Active (uncheck to block access)</label>
+        ${state.profile.role === "owner" ? `<label class="row" style="color:var(--text)"><input type="checkbox" name="can_edit_inventory" style="width:auto;min-height:0" ${p.can_edit_inventory ? "checked" : ""}> Can change inventory (updates Shopify)</label>` : ""}
         <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" id="reset">Reset password</button><button type="button" class="btn" data-close>Cancel</button></div>
       </form>`, (r, close) => {
       r.querySelector("#f").onsubmit = async (e) => {
@@ -771,7 +899,8 @@ async function renderActivity(root) {
   (usage ?? []).forEach((u) => { const b = (byUser[u.user_id] ??= { n: 0, c: 0 }); b.n++; b.c += Number(u.cost_usd); });
   const label = { login: "signed in", view_sop: "viewed SOP", update_job: "updated job", create_job: "created job", delete_job: "deleted job",
     adjust_inventory: "adjusted", update_inventory: "updated item", create_inventory: "added item", delete_inventory: "deleted item",
-    update_sop: "edited SOP", create_sop: "created SOP", delete_sop: "deleted SOP", password_changed: "changed password" };
+    update_sop: "edited SOP", create_sop: "created SOP", delete_sop: "deleted SOP", password_changed: "changed password",
+    clock_in: "clocked in", clock_out: "clocked out", sync_shopify: "synced Shopify inventory" };
   const describe = (a) => {
     const d = a.detail ?? {};
     if (a.action === "adjust_inventory") return `${d.name}: ${d.from} → ${d.to}`;

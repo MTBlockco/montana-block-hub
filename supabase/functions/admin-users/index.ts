@@ -95,6 +95,10 @@ Deno.serve(async (req) => {
     if (body.full_name !== undefined) patch.full_name = String(body.full_name).trim();
     if (body.title !== undefined) patch.title = body.title ? String(body.title).trim() : null;
     if (body.active !== undefined) patch.active = Boolean(body.active);
+    if (body.can_edit_inventory !== undefined) {
+      if (!isOwner) return json({ error: "Only Mitchell can change who edits inventory." }, 403);
+      patch.can_edit_inventory = Boolean(body.can_edit_inventory);
+    }
     if (body.daily_ai_limit !== undefined) patch.daily_ai_limit = Math.max(0, Math.min(200, Number(body.daily_ai_limit) || 0));
     if (body.role !== undefined) {
       if (!canAssign(String(body.role))) return json({ error: "You can't assign that role" }, 403);
