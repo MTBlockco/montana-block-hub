@@ -26,7 +26,9 @@ async function fnCall(name, body) {
 }
 const JOB_STATUSES = ["Queued", "Milling", "Glue-up", "Machining", "Sanding", "Finishing", "QC", "Ready", "Shipped", "Hold"];
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
-const INV_CATS = ["Finished goods", "Board care", "Merch", "Lumber", "Finish", "Abrasives", "Hardware", "Shop supplies"];
+const INV_CATS = ["Finished goods", "Board care", "Merch"];
+const SUPPLY_CATS = ["Abrasives", "Finish & oil", "Glue & epoxy", "Magnets", "Fasteners & hardware", "Blades & bits", "Packaging & shipping", "Engraving & branding", "PPE & safety", "Cleaning & shop", "Lumber", "Other"];
+const ORDER_METHODS = ["Website", "Phone", "Email", "Sales rep", "In person"];
 const fmtDate = (d) => (d ? new Date(d + (String(d).length === 10 ? "T12:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
 const daysUntil = (d) => Math.round((new Date(d + "T12:00:00") - new Date(today() + "T12:00:00")) / 864e5);
@@ -106,6 +108,7 @@ const I = {
   jobs: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>',
   inv: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4-9 4-9-4z"/><path d="M3 12l9 4 9-4M3 17l9 4 9-4"/></svg>',
   sop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h11l5 5v11H4z"/><path d="M15 4v5h5M8 13h8M8 17h8"/></svg>',
+  box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
   ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
@@ -116,7 +119,8 @@ const state = { session: null, profile: null, view: "home", cache: {}, chat: [] 
 const VIEWS = {
   home: { label: "Home", icon: I.home, render: renderHome },
   jobs: { label: "Jobs", icon: I.jobs, render: renderJobs },
-  inventory: { label: "Inventory", icon: I.inv, render: renderInventory },
+  inventory: { label: "Products", icon: I.inv, render: renderInventory },
+  supplies: { label: "Supplies", icon: I.box, render: renderSupplies },
   sops: { label: "SOPs", icon: I.sop, render: renderSops },
   ask: { label: "Ask", icon: I.ask, render: renderAsk },
   more: { label: "More", icon: I.more, render: renderMore },
@@ -443,7 +447,7 @@ function editJob(j = {}) {
 // ---------------------------------------------------------------- Inventory
 let invCat = "All", invQ = "";
 async function renderInventory(root) {
-  const { data: items } = await sb.from("inventory_items").select("*").order("category").order("name");
+  const { data: items } = await sb.from("inventory_items").select("*").eq("source", "shopify").order("category").order("name");
   state.cache.inventory = items ?? [];
   let suppliers = [];
   if (can("lead")) suppliers = (await sb.from("suppliers").select("id, name").order("name")).data ?? [];
@@ -454,8 +458,8 @@ async function renderInventory(root) {
     (!q || [i.name, i.sku, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
   const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
-    ${topbar("Inventory", canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button><button class="btn sm primary" id="new">+ Item</button>' : "")}
-    <input id="q" placeholder="Search walnut, 8/4, finish…" value="${esc(invQ)}" style="margin-bottom:10px">
+    ${topbar("Products", canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button>' : "")}
+    <input id="q" placeholder="Search boards, SKU…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
     <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
     <div class="list" style="margin-top:12px">${list.map((i) => `
@@ -567,6 +571,178 @@ function editItem(i = {}) {
       log("delete_inventory", "inventory", i.id, { name: i.name });
       close(); renderShell();
     });
+  });
+}
+
+// ---------------------------------------------------------------- Supplies (shop consumables + vendors)
+let supCat = "All", supQ = "";
+const money = (n) => (n == null || n === "" ? "" : "$" + Number(n).toFixed(2));
+async function renderSupplies(root) {
+  const [{ data: items }, { data: vendors }] = await Promise.all([
+    sb.from("inventory_items").select("*").eq("source", "hub").order("category").order("name"),
+    sb.from("suppliers").select("*").order("name"),
+  ]);
+  state.cache.suppliers = vendors ?? [];
+  const vName = (id) => (vendors ?? []).find((v) => v.id === id)?.name ?? "";
+  const q = supQ.toLowerCase();
+  const list = (items ?? []).filter((i) =>
+    (supCat === "All" || (supCat === "Low" ? isLow(i) : supCat === "Vendors" ? false : i.category === supCat)) &&
+    (!q || [i.name, i.category, i.location, i.vendor_sku, vName(i.supplier_id)].join(" ").toLowerCase().includes(q)));
+  const lowCount = (items ?? []).filter(isLow).length;
+  const groups = {};
+  list.forEach((i) => (groups[i.category] ??= []).push(i));
+  const usedCats = SUPPLY_CATS.filter((c) => (items ?? []).some((i) => i.category === c));
+
+  root.innerHTML = `
+    ${topbar("Supplies", canInv() ? '<button class="btn sm primary" id="new">+ Supply</button>' : "")}
+    <input id="q" placeholder="Search sandpaper, glue, vendor…" value="${esc(supQ)}" style="margin-bottom:10px">
+    <div class="chips">${["All", "Low", "Vendors", ...usedCats].map((c) => `<button class="chip ${c === supCat ? "active" : ""}" data-c="${c}">${c === "Low" && lowCount ? `Low (${lowCount})` : c}</button>`).join("")}</div>
+    <div id="body" style="margin-top:12px"></div>`;
+  const body = root.querySelector("#body");
+
+  if (supCat === "Vendors") {
+    body.innerHTML = `${canInv() ? '<div class="row" style="margin-bottom:10px"><button class="btn sm primary" id="newv">+ Vendor</button></div>' : ""}
+      <div class="list">${(vendors ?? []).map((v) => {
+        const n = (items ?? []).filter((i) => i.supplier_id === v.id);
+        return `<div class="item" data-v="${v.id}"><div class="row between"><span class="title">${esc(v.name)}</span><span class="badge">${n.length} item${n.length === 1 ? "" : "s"}</span></div>
+          <div class="small muted">${[v.order_method, v.contact_name, v.phone, v.email, v.website, v.lead_time_days ? v.lead_time_days + "-day lead time" : ""].filter(Boolean).map(esc).join(" · ")}</div>
+          ${n.length ? `<div class="small" style="margin-top:4px">${n.map((i) => esc(i.name)).join(", ")}</div>` : ""}</div>`;
+      }).join("") || '<div class="empty">No vendors yet.</div>'}</div>`;
+    body.querySelector("#newv")?.addEventListener("click", () => editVendor({}, () => renderSupplies(root)));
+    body.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => canInv() ? editVendor(vendors.find((v) => v.id === b.dataset.v), () => renderSupplies(root)) : null));
+  } else {
+    body.innerHTML = Object.entries(groups).map(([cat, its]) => `
+      <h2 class="section">${esc(cat)}</h2>
+      <div class="list">${its.map((i) => `
+        <div class="item" data-id="${i.id}">
+          <div class="row between">
+            <div style="min-width:0" data-open="${i.id}">
+              <div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</div>
+              <div class="small muted">${[vName(i.supplier_id), i.vendor_sku ? "#" + i.vendor_sku : "", i.location].filter(Boolean).map(esc).join(" · ") || "No vendor set"}</div>
+            </div>
+            <div class="qty">
+              ${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Use one">−</button>' : ""}
+              <span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>
+              ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}
+            </div>
+          </div>
+        </div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No supplies tracked yet."}</div>`;
+    body.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => supplyDetail(items.find((i) => i.id === b.dataset.open), vendors ?? [], () => renderSupplies(root))));
+    body.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
+      e.stopPropagation();
+      const id = b.closest("[data-id]").dataset.id;
+      const item = items.find((i) => i.id === id);
+      const next = Math.max(0, Number(item.quantity) + Number(b.dataset.adj));
+      const { error } = await sb.from("inventory_items").update({ quantity: next }).eq("id", id);
+      if (error) return toast(error.message);
+      log("adjust_inventory", "inventory", id, { name: item.name, from: Number(item.quantity), to: next });
+      item.quantity = next;
+      b.parentElement.querySelector(".n").innerHTML = `${next} <span class="small muted">${esc(item.unit)}</span>`;
+      if (isLow(item)) toast(`${item.name} is at or below its reorder point`);
+    }));
+  }
+  wireTopbar(root);
+  const qEl = root.querySelector("#q");
+  qEl.oninput = () => { supQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => renderSupplies(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }), 250); };
+  root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { supCat = b.dataset.c; renderSupplies(root); }));
+  root.querySelector("#new")?.addEventListener("click", () => editSupply({}, vendors ?? [], () => renderSupplies(root)));
+}
+
+function supplyDetail(i, vendors, done) {
+  const v = vendors.find((x) => x.id === i.supplier_id);
+  sheet(`
+    <div class="row between"><span class="badge">${esc(i.category)}</span><button class="btn sm" data-close>Close</button></div>
+    <h2 style="margin-top:10px">${esc(i.name)}</h2>
+    <table>
+      <tr><th>On hand</th><td>${Number(i.quantity)} ${esc(i.unit)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</td></tr>
+      ${i.reorder_point != null ? `<tr><th>Reorder at</th><td>${i.reorder_point} ${esc(i.unit)}${i.reorder_qty ? ` · order ${i.reorder_qty}` : ""}</td></tr>` : ""}
+      ${i.location ? `<tr><th>Where</th><td>${esc(i.location)}</td></tr>` : ""}
+      ${v ? `<tr><th>Vendor</th><td><strong>${esc(v.name)}</strong>${i.vendor_sku ? ` · #${esc(i.vendor_sku)}` : ""}<br><span class="small muted">${[v.order_method, v.phone, v.email].filter(Boolean).map(esc).join(" · ")}</span>${v.website ? `<br><a href="${esc(v.website.startsWith("http") ? v.website : "https://" + v.website)}" target="_blank" rel="noopener">${esc(v.website)}</a>` : ""}</td></tr>` : ""}
+      ${i.pack_size ? `<tr><th>Comes in</th><td>${esc(i.pack_size)}</td></tr>` : ""}
+      ${i.unit_cost != null && canInv() ? `<tr><th>Last price</th><td>${money(i.unit_cost)} / ${esc(i.unit)}</td></tr>` : ""}
+      ${i.last_ordered ? `<tr><th>Last ordered</th><td>${fmtDate(i.last_ordered)}</td></tr>` : ""}
+      ${i.notes ? `<tr><th>Notes</th><td>${esc(i.notes)}</td></tr>` : ""}
+    </table>
+    ${canInv() ? '<div class="row" style="margin-top:12px"><button class="btn" id="edit">Edit</button></div>' : ""}`,
+  (root, close) => root.querySelector("#edit")?.addEventListener("click", () => { close(); editSupply(i, vendors, done); }));
+}
+
+function editSupply(i, vendors, done) {
+  sheet(`
+    <form class="stack" id="f">
+      <h2>${i.id ? "Edit supply" : "New supply"}</h2>
+      <div><label>Item</label><input name="name" value="${esc(i.name)}" required placeholder="e.g. 120 grit 5&quot; hook &amp; loop discs"></div>
+      <div class="grid2">
+        <div><label>Category</label><select name="category">${SUPPLY_CATS.map((c) => `<option ${i.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+        <div><label>Where it's kept</label><input name="location" value="${esc(i.location)}" placeholder="Finish room, shelf 2"></div>
+        <div><label>On hand</label><input name="quantity" type="number" step="any" value="${esc(i.quantity ?? 0)}" required></div>
+        <div><label>Counted in</label><input name="unit" value="${esc(i.unit ?? "ea")}" placeholder="box, gal, roll, ea"></div>
+        <div><label>Reorder when at or below</label><input name="reorder_point" type="number" step="any" value="${esc(i.reorder_point)}"></div>
+        <div><label>How many to order</label><input name="reorder_qty" type="number" step="any" value="${esc(i.reorder_qty)}"></div>
+      </div>
+      <h3 class="section" style="margin-bottom:0">Where it comes from</h3>
+      <div class="grid2">
+        <div><label>Vendor</label><select name="supplier_id"><option value="">—</option>${vendors.map((v) => `<option value="${v.id}" ${i.supplier_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("")}<option value="__new">+ New vendor…</option></select></div>
+        <div><label>Vendor item #</label><input name="vendor_sku" value="${esc(i.vendor_sku)}"></div>
+        <div><label>Comes in</label><input name="pack_size" value="${esc(i.pack_size)}" placeholder="box of 50, 5 gal pail"></div>
+        <div><label>Last price per unit</label><input name="unit_cost" type="number" step="0.01" value="${esc(i.unit_cost)}"></div>
+        <div><label>Last ordered</label><input name="last_ordered" type="date" value="${esc(i.last_ordered)}"></div>
+      </div>
+      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(i.notes)}</textarea></div>
+      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
+        ${i.id ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
+    </form>`, (root, close) => {
+    root.querySelector('[name="supplier_id"]').onchange = (e) => {
+      if (e.target.value !== "__new") return;
+      e.target.value = "";
+      editVendor({}, (v) => { if (!v) return; vendors.push(v); const o = new Option(v.name, v.id, true, true); e.target.add(o, e.target.options.length - 1); });
+    };
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const num = (x) => (x === "" ? null : Number(x));
+      const row = { name: f.name, category: f.category, location: f.location || null, quantity: Number(f.quantity), unit: f.unit || "ea",
+        reorder_point: num(f.reorder_point), reorder_qty: num(f.reorder_qty), supplier_id: f.supplier_id || null, vendor_sku: f.vendor_sku || null,
+        pack_size: f.pack_size || null, unit_cost: num(f.unit_cost), last_ordered: f.last_ordered || null, notes: f.notes || null, source: "hub" };
+      const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
+      if (res.error) return toast(res.error.message);
+      log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: row.name, quantity: row.quantity });
+      close(); done();
+    };
+    root.querySelector("#del")?.addEventListener("click", async () => {
+      if (!confirm(`Delete ${i.name}?`)) return;
+      await sb.from("inventory_items").delete().eq("id", i.id);
+      log("delete_inventory", "inventory", i.id, { name: i.name });
+      close(); done();
+    });
+  });
+}
+
+function editVendor(v = {}, done) {
+  sheet(`
+    <form class="stack" id="f"><h2>${v.id ? "Edit vendor" : "New vendor"}</h2>
+      <div><label>Vendor name</label><input name="name" value="${esc(v.name)}" required></div>
+      <div class="grid2">
+        <div><label>How we order</label><select name="order_method"><option value="">—</option>${ORDER_METHODS.map((m) => `<option ${v.order_method === m ? "selected" : ""}>${m}</option>`).join("")}</select></div>
+        <div><label>Website</label><input name="website" value="${esc(v.website)}"></div>
+        <div><label>Contact / rep</label><input name="contact_name" value="${esc(v.contact_name)}"></div>
+        <div><label>Phone</label><input name="phone" type="tel" value="${esc(v.phone)}"></div>
+        <div><label>Email</label><input name="email" type="email" value="${esc(v.email)}"></div>
+        <div><label>Our account #</label><input name="account_number" value="${esc(v.account_number)}"></div>
+        <div><label>Lead time (days)</label><input name="lead_time_days" type="number" value="${esc(v.lead_time_days)}"></div>
+      </div>
+      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(v.notes)}</textarea></div>
+      <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (root, close) => {
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const row = { ...f, lead_time_days: f.lead_time_days ? Number(f.lead_time_days) : null };
+      Object.keys(row).forEach((k) => row[k] === "" && (row[k] = null));
+      const res = v.id ? await sb.from("suppliers").update(row).eq("id", v.id).select().single() : await sb.from("suppliers").insert(row).select().single();
+      if (res.error) return toast(res.error.message);
+      close(); done(res.data);
+    };
   });
 }
 
@@ -682,7 +858,6 @@ async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
     { k: "hours", label: "My hours" },
-    ...(can("lead") ? [{ k: "suppliers", label: "Suppliers" }] : []),
     ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
   root.innerHTML = `${topbar("More")}

@@ -103,7 +103,7 @@ h3 { font-size: 1.02rem; }
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(6, 1fr);
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface); border-top: 2px solid var(--brass);
@@ -111,7 +111,7 @@ h3 { font-size: 1.02rem; }
 .tabbar button, .sidebar button {
   border: 0; background: none; cursor: pointer; color: var(--muted);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-  font-family: var(--display); font-size: .74rem; letter-spacing: .06em; text-transform: uppercase;
+  font-family: var(--display); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
 }
 .tabbar button svg, .sidebar button svg { width: 22px; height: 22px; }
 .tabbar button.active { color: var(--accent); }

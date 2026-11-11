@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
   // Gather only what this person is allowed to see (row level security applies).
   const [sops, inventory, jobs, announcements, team] = await Promise.all([
     userClient.from("sops").select("title, category, body").order("category"),
-    userClient.from("inventory_items").select("category, name, species, thickness, unit, quantity, reorder_point, location").order("category"),
+    userClient.from("inventory_items").select("category, name, sku, unit, quantity, reorder_point, reorder_qty, location, pack_size, vendor_sku, suppliers(name, order_method, website, phone)").order("category"),
     userClient.from("jobs").select("title, customer, channel, status, priority, due_date, notes").neq("status", "Shipped").order("due_date"),
     userClient.from("announcements").select("title, body, due_at").order("created_at", { ascending: false }).limit(20),
     userClient.from("profiles").select("full_name, title, role").eq("active", true),
