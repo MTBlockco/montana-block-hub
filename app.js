@@ -673,7 +673,7 @@ async function renderTeam(root) {
     <div class="list">${people.map((p) => `<div class="item" data-p="${p.id}"><div class="row between">
       <div><div class="title">${esc(p.full_name || p.email)}</div><div class="small muted">${esc(p.email)}${p.title ? " · " + esc(p.title) : ""}</div></div>
       <div class="row"><span class="badge ${p.active ? "" : "bad"}">${p.active ? ROLE_LABEL[p.role] : "Inactive"}</span></div></div></div>`).join("")}</div>
-    ${waiting.length ? `<h2 class="section">From Square, no login yet</h2>
+    ${waiting.length ? `<div class="row between section"><h2 style="margin:0">From Square, no login yet</h2><button class="btn sm primary" id="bulk">Create all ${waiting.length} logins</button></div>
     <div class="list">${waiting.map((d) => `<div class="item" style="cursor:default"><div class="row between">
       <div><div class="title">${esc(d.full_name)}</div><div class="small muted">${esc(d.email ?? "")}${d.title ? " · " + esc(d.title) : ""} · ${ROLE_LABEL[d.planned_role]}</div></div>
       ${assignable.includes(d.planned_role) ? `<button class="btn sm" data-d="${d.id}">Create login</button>` : ""}</div></div>`).join("")}</div>` : ""}
@@ -697,6 +697,30 @@ async function renderTeam(root) {
     };
   });
   root.querySelector("#new").onclick = () => addPerson();
+  root.querySelector("#bulk")?.addEventListener("click", async (e) => {
+    if (!confirm(`Create logins for ${waiting.length} people with temporary passwords?`)) return;
+    e.target.disabled = true; e.target.textContent = "Creating…";
+    const res = await adminCall({ action: "create_from_directory" });
+    renderTeam(root);
+    if (!res) return;
+    const rows = res.created.map((c) => `<tr><td>${esc(c.name)}</td><td class="small">${esc(c.email)}</td><td>${ROLE_LABEL[c.role]}</td><td><code style="font-size:1rem">${esc(c.password)}</code></td></tr>`).join("");
+    sheet(`
+      <div class="stack" id="slips">
+        <h2>${res.created.length} logins created</h2>
+        <p class="small muted" style="margin:0"><strong>Write these down or print now. They won't be shown again.</strong> Each person signs in at mtblockco.github.io/montana-block-hub with their email and temporary password, then chooses their own. Forgotten? Use Reset password on their name.</p>
+        <table><tr><th>Name</th><th>Login email</th><th>Role</th><th>Temp password</th></tr>${rows}</table>
+        ${res.skipped.length ? `<p class="small error" style="margin:0">Not created: ${res.skipped.map((s) => esc(s.name) + " (" + esc(s.reason) + ")").join(", ")}</p>` : ""}
+        <div class="row"><button class="btn" id="print">Print</button><button class="btn primary" data-close>Done</button></div>
+      </div>`, (r) => {
+      r.querySelector("#print").onclick = () => {
+        const w = window.open("", "_blank");
+        w.document.write(`<title>Hub logins</title><style>body{font-family:sans-serif;padding:24px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:10px;text-align:left}code{font-size:16px}</style>
+          <h2>Montana Block Hub logins</h2><p>Sign in at <b>mtblockco.github.io/montana-block-hub</b>, then choose your own password.</p>
+          <table><tr><th>Name</th><th>Email</th><th>Temp password</th></tr>${res.created.map((c) => `<tr><td>${esc(c.name)}</td><td>${esc(c.email)}</td><td><code>${esc(c.password)}</code></td></tr>`).join("")}</table>`);
+        w.document.close(); w.print();
+      };
+    });
+  });
   root.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => addPerson(directory.find((d) => d.id === b.dataset.d))));
   root.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => {
     const p = people.find((x) => x.id === b.dataset.p);

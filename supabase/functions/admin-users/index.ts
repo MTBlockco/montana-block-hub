@@ -54,6 +54,40 @@ Deno.serve(async (req) => {
     return json({ ok: true, id: data.user.id });
   }
 
+  // Create logins for everyone in the Square roster who doesn't have one yet.
+  // Temporary passwords are generated here and returned only to the signed-in admin's screen.
+  if (action === "create_from_directory") {
+    const WORDS = ["oak", "ash", "elm", "fir", "pine", "birch", "maple", "cedar", "alder", "walnut", "cherry", "hickory",
+      "spruce", "larch", "aspen", "willow", "beech", "poplar", "juniper", "sequoia", "teak", "locust", "sumac", "yew"];
+    const rnd = (n: number) => crypto.getRandomValues(new Uint32Array(1))[0] % n;
+    const tempPassword = () => `${WORDS[rnd(WORDS.length)]}-${WORDS[rnd(WORDS.length)]}-${1000 + rnd(9000)}`;
+
+    const { data: dir } = await service.from("staff_directory").select("*").order("full_name");
+    const { data: existing } = await service.from("profiles").select("email");
+    const have = new Set((existing ?? []).map((p) => (p.email ?? "").toLowerCase()));
+
+    const created: { name: string; email: string; role: string; password: string }[] = [];
+    const skipped: { name: string; reason: string }[] = [];
+    for (const d of dir ?? []) {
+      const email = String(d.email ?? "").trim().toLowerCase();
+      if (!email.includes("@")) { skipped.push({ name: d.full_name, reason: "no email in Square" }); continue; }
+      if (have.has(email)) continue;
+      if (!canAssign(d.planned_role)) { skipped.push({ name: d.full_name, reason: "only the owner can create admins" }); continue; }
+      const password = tempPassword();
+      const { data, error } = await service.auth.admin.createUser({
+        email, password, email_confirm: true,
+        user_metadata: { full_name: d.full_name },
+        app_metadata: { initial_role: d.planned_role },
+      });
+      if (error) { skipped.push({ name: d.full_name, reason: error.message }); continue; }
+      await service.from("profiles").update({
+        full_name: d.full_name, title: d.title, role: d.planned_role, must_change_password: true,
+      }).eq("id", data.user.id);
+      created.push({ name: d.full_name, email, role: d.planned_role, password });
+    }
+    return json({ ok: true, created, skipped });
+  }
+
   if (action === "update") {
     const id = String(body.id ?? "");
     if (!(await canManage(id))) return json({ error: "You can't edit that person" }, 403);
