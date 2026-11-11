@@ -42,6 +42,16 @@ Deno.serve(async (req) => {
 
   if (body.action === "status") return json({ open });
 
+  // Read-only connection test for admins: confirms the Square token works and can see the shop's timecards.
+  if (body.action === "square_check") {
+    if (!["admin", "owner"].includes(caller.profile.role)) return json({ error: "Admins only" }, 403);
+    try {
+      const loc = await square(`/locations/${LOCATION}`);
+      const tc = await square("/labor/timecards/search", "POST", { query: { filter: { location_ids: [LOCATION] } }, limit: 1 });
+      return json({ ok: true, location: loc.location?.name, can_read_timecards: Array.isArray(tc.timecards) || tc.timecards === undefined });
+    } catch (e) { return json({ ok: false, error: (e as Error).message === "NO_TOKEN" ? "No Square token saved" : (e as Error).message }); }
+  }
+
   if (body.action === "clock_in") {
     if (open) return json({ error: "You're already clocked in.", open }, 409);
     const now = new Date();
