@@ -103,7 +103,7 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: "Not signed in" }, 401);
     const { data: p } = await service.from("profiles").select("role, active, can_edit_inventory").eq("id", user.id).single();
     if (!p || !p.active || !(p.role === "owner" || p.can_edit_inventory)) {
-      return json({ error: "Only Mitchell, Brittany and Nate Jones can change inventory." }, 403);
+      return json({ error: "Only people Mitchell has given inventory access can change inventory." }, 403);
     }
     userId = user.id;
   }

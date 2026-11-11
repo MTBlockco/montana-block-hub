@@ -489,8 +489,8 @@ async function renderInventory(root) {
   }));
   root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => {
     const it = items.find((i) => i.id === b.dataset.open);
-    if (it.source === "shopify") return canInv() ? setShopifyCount(it, root) : toast("Product counts come from Shopify. Ask Mitchell, Brittany or Nate Jones to correct it.");
-    if (!canInv()) return toast("Only Mitchell, Brittany and Nate Jones can change inventory.");
+    if (it.source === "shopify") return canInv() ? setShopifyCount(it, root) : toast("Product counts come from Shopify. Ask Mitchell, Brittany or one of the Nates to correct it.");
+    if (!canInv()) return toast("Only people Mitchell has given inventory access can change inventory.");
     editItem(it);
   }));
   root.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
