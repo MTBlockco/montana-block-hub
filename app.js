@@ -616,7 +616,8 @@ async function renderSupplies(root) {
       <div class="list">${its.map((i) => `
         <div class="item" data-id="${i.id}">
           <div class="row between">
-            <div style="min-width:0" data-open="${i.id}">
+            ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
+            <div style="min-width:0;flex:1" data-open="${i.id}">
               <div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</div>
               <div class="small muted">${[vName(i.supplier_id), i.vendor_sku ? "#" + i.vendor_sku : "", i.location].filter(Boolean).map(esc).join(" · ") || "No vendor set"}</div>
             </div>
@@ -648,11 +649,21 @@ async function renderSupplies(root) {
   root.querySelector("#new")?.addEventListener("click", () => editSupply({}, vendors ?? [], () => renderSupplies(root)));
 }
 
+// Phone photos are huge; shrink to a reasonable JPEG before uploading.
+async function shrinkImage(file, max) {
+  const img = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const c = document.createElement("canvas"); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise((r) => c.toBlob(r, "image/jpeg", 0.82));
+}
+
 function supplyDetail(i, vendors, done) {
   const v = vendors.find((x) => x.id === i.supplier_id);
   sheet(`
     <div class="row between"><span class="badge">${esc(i.category)}</span><button class="btn sm" data-close>Close</button></div>
     <h2 style="margin-top:10px">${esc(i.name)}</h2>
+    ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="${esc(i.name)}" style="width:100%;max-height:320px;object-fit:contain;border-radius:12px;background:var(--surface-2);margin-bottom:10px">` : ""}
     <table>
       <tr><th>On hand</th><td>${Number(i.quantity)} ${esc(i.unit)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</td></tr>
       ${i.reorder_point != null ? `<tr><th>Reorder at</th><td>${i.reorder_point} ${esc(i.unit)}${i.reorder_qty ? ` · order ${i.reorder_qty}` : ""}</td></tr>` : ""}
@@ -672,6 +683,10 @@ function editSupply(i, vendors, done) {
     <form class="stack" id="f">
       <h2>${i.id ? "Edit supply" : "New supply"}</h2>
       <div><label>Item</label><input name="name" value="${esc(i.name)}" required placeholder="e.g. 120 grit 5&quot; hook &amp; loop discs"></div>
+      <div class="row" style="align-items:center">
+        <img id="ph" src="${esc(i.photo_url ?? "")}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:10px;background:var(--surface-2);${i.photo_url ? "" : "display:none"}">
+        <label class="btn sm" style="margin:0;color:var(--text)">${i.photo_url ? "Change photo" : "Add photo"}<input type="file" accept="image/*" capture="environment" id="photo" style="display:none"></label>
+      </div>
       <div class="grid2">
         <div><label>Category</label><select name="category">${SUPPLY_CATS.map((c) => `<option ${i.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
         <div><label>Where it's kept</label><input name="location" value="${esc(i.location)}" placeholder="Finish room, shelf 2"></div>
@@ -692,6 +707,11 @@ function editSupply(i, vendors, done) {
       <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
         ${i.id ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
     </form>`, (root, close) => {
+    let photoFile = null;
+    root.querySelector("#photo").onchange = (e) => {
+      photoFile = e.target.files[0] ?? null;
+      if (photoFile) { const ph = root.querySelector("#ph"); ph.src = URL.createObjectURL(photoFile); ph.style.display = ""; }
+    };
     root.querySelector('[name="supplier_id"]').onchange = (e) => {
       if (e.target.value !== "__new") return;
       e.target.value = "";
@@ -704,6 +724,14 @@ function editSupply(i, vendors, done) {
       const row = { name: f.name, category: f.category, location: f.location || null, quantity: Number(f.quantity), unit: f.unit || "ea",
         reorder_point: num(f.reorder_point), reorder_qty: num(f.reorder_qty), supplier_id: f.supplier_id || null, vendor_sku: f.vendor_sku || null,
         pack_size: f.pack_size || null, unit_cost: num(f.unit_cost), last_ordered: f.last_ordered || null, notes: f.notes || null, source: "hub" };
+      if (photoFile) {
+        const btn = e.target.querySelector(".primary"); btn.disabled = true; btn.textContent = "Uploading photo…";
+        const small = await shrinkImage(photoFile, 1200);
+        const path = `${crypto.randomUUID()}.jpg`;
+        const up = await sb.storage.from("supplies").upload(path, small, { contentType: "image/jpeg" });
+        if (up.error) { btn.disabled = false; btn.textContent = "Save"; return toast("Photo upload failed: " + up.error.message); }
+        row.photo_url = sb.storage.from("supplies").getPublicUrl(path).data.publicUrl;
+      }
       const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
       if (res.error) return toast(res.error.message);
       log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: row.name, quantity: row.quantity });
