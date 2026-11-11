@@ -427,7 +427,7 @@ async function renderInventory(root) {
   root.querySelector("#new")?.addEventListener("click", () => editItem());
   root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => {
     const it = items.find((i) => i.id === b.dataset.open);
-    if (it.source === "shopify") return toast("This count comes from Shopify. Change it in Shopify; the hub syncs daily.");
+    if (it.source === "shopify") return toast("This count comes from Shopify. Change it in Shopify; the hub picks up the new count at the next sync.");
     editItem(it);
   }));
   root.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
