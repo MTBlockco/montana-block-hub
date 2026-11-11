@@ -130,6 +130,7 @@ function go(view) {
 
 async function boot() {
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  addEventListener("hashchange", () => { const h = location.hash.slice(1); if (state.profile && VIEWS[h] && h !== state.view) { state.view = h; renderShell(); } });
   const { data } = await sb.auth.getSession();
   state.session = data.session;
   sb.auth.onAuthStateChange((_e, session) => {
