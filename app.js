@@ -13,7 +13,7 @@ const ROLE_LABEL = { pending: "Pending", shop: "Shop", lead: "Lead", admin: "Adm
 const can = (min) => state.profile && ROLES.indexOf(state.profile.role) >= ROLES.indexOf(min);
 const JOB_STATUSES = ["Queued", "Milling", "Glue-up", "Machining", "Sanding", "Finishing", "QC", "Ready", "Shipped", "Hold"];
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
-const INV_CATS = ["Lumber", "Finished goods", "Finish", "Abrasives", "Hardware", "Shop supplies"];
+const INV_CATS = ["Finished goods", "Board care", "Merch", "Lumber", "Finish", "Abrasives", "Hardware", "Shop supplies"];
 const fmtDate = (d) => (d ? new Date(d + (String(d).length === 10 ? "T12:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
 const daysUntil = (d) => Math.round((new Date(d + "T12:00:00") - new Date(today() + "T12:00:00")) / 864e5);
@@ -400,21 +400,24 @@ async function renderInventory(root) {
   const q = invQ.toLowerCase();
   const list = (items ?? []).filter((i) =>
     (invCat === "All" || (invCat === "Low" ? isLow(i) : i.category === invCat)) &&
-    (!q || [i.name, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
+    (!q || [i.name, i.sku, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
+  const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
     ${topbar("Inventory", can("lead") ? '<button class="btn sm primary" id="new">+ Item</button>' : "")}
     <input id="q" placeholder="Search walnut, 8/4, finish…" value="${esc(invQ)}" style="margin-bottom:10px">
+    ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
     <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
     <div class="list" style="margin-top:12px">${list.map((i) => `
       <div class="item" data-id="${i.id}">
         <div class="row between">
           <div style="min-width:0" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
-            <div class="small muted">${[i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
+            <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
+          ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
           <div class="qty">
             <button class="btn icon sm" data-adj="-1" aria-label="Decrease">−</button>
             <span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>
             <button class="btn icon sm" data-adj="1" aria-label="Increase">+</button>
-          </div>
+          </div>`}
         </div>
       </div>`).join("") || '<div class="empty">No items yet.</div>'}</div>`;
   wireTopbar(root);
@@ -422,7 +425,11 @@ async function renderInventory(root) {
   qEl.oninput = () => { invQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => { renderInventory(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { invCat = b.dataset.c; renderInventory(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editItem());
-  root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => editItem(items.find((i) => i.id === b.dataset.open))));
+  root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => {
+    const it = items.find((i) => i.id === b.dataset.open);
+    if (it.source === "shopify") return toast("This count comes from Shopify. Change it in Shopify; the hub syncs daily.");
+    editItem(it);
+  }));
   root.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
     e.stopPropagation();
     const id = b.closest("[data-id]").dataset.id;
