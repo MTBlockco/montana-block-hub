@@ -7,7 +7,7 @@ const SQUARE = "https://connect.squareup.com/v2";
 const SQUARE_VERSION = "2025-10-16";
 
 async function square(path: string, method = "GET", body?: unknown) {
-  const token = Deno.env.get("SQUARE_ACCESS_TOKEN");
+  const token = Deno.env.get("SQUARE_ACCESS_TOKEN")?.trim();
   if (!token) throw new Error("NO_TOKEN");
   const res = await fetch(SQUARE + path, {
     method,
@@ -45,11 +45,16 @@ Deno.serve(async (req) => {
   // Read-only connection test for admins: confirms the Square token works and can see the shop's timecards.
   if (body.action === "square_check") {
     if (!["admin", "owner"].includes(caller.profile.role)) return json({ error: "Admins only" }, 403);
+    // Shape of the saved token only (never the value): helps spot paste mistakes.
+    const t = Deno.env.get("SQUARE_ACCESS_TOKEN") ?? "";
+    const shape = { length: t.length, starts_with: t.slice(0, 4).replace(/[^\x20-\x7e]/g, "?"),
+      non_ascii_chars: [...t].filter((c) => c.charCodeAt(0) > 126 || c.charCodeAt(0) < 32).length,
+      has_spaces: /\s/.test(t) };
     try {
       const loc = await square(`/locations/${LOCATION}`);
       const tc = await square("/labor/timecards/search", "POST", { query: { filter: { location_ids: [LOCATION] } }, limit: 1 });
-      return json({ ok: true, location: loc.location?.name, can_read_timecards: Array.isArray(tc.timecards) || tc.timecards === undefined });
-    } catch (e) { return json({ ok: false, error: (e as Error).message === "NO_TOKEN" ? "No Square token saved" : (e as Error).message }); }
+      return json({ ok: true, shape, location: loc.location?.name, can_read_timecards: Array.isArray(tc.timecards) || tc.timecards === undefined });
+    } catch (e) { return json({ ok: false, shape, error: (e as Error).message === "NO_TOKEN" ? "No Square token saved" : (e as Error).message }); }
   }
 
   if (body.action === "clock_in") {
