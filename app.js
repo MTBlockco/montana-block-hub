@@ -313,6 +313,7 @@ async function renderClock(el, preset) {
   const res = preset ?? await fnCall("timeclock", { action: "status" });
   if (res.error) { el.innerHTML = `<div class="small error">${esc(res.error)}</div>`; return; }
   const open = res.open;
+  if (res.note && !preset) toast(res.note);
   clearInterval(clockTimer);
   el.classList.toggle("on", !!open);
   el.innerHTML = `
@@ -737,16 +738,19 @@ async function renderMyHours(root) {
 async function renderTimeclockAdmin(root) {
   await loadProfiles();
   const since = weekStart(0);
-  const [{ data: open }, { data: week }] = await Promise.all([
-    sb.from("time_entries").select("*").is("clock_out", null),
+  const [sq, { data: week }] = await Promise.all([
+    fnCall("timeclock", { action: "team_status" }),
     sb.from("time_entries").select("*").gte("clock_in", since.toISOString()).order("clock_in", { ascending: false }),
   ]);
   const byUser = {};
   (week ?? []).forEach((e) => { byUser[e.user_id] = (byUser[e.user_id] ?? 0) + entryMs(e); });
+  // Square is the source of truth for who's on right now (covers register punches).
+  const open = sq?.ok ? sq.on.map((o) => ({ user_id: o.user_id, clock_in: o.clock_in, name: o.user_id ? nameOf(o.user_id) : "Someone without a hub login" }))
+                      : ((await sb.from("time_entries").select("*").is("clock_out", null)).data ?? []);
   const issues = (week ?? []).filter((e) => e.square_status === "error");
   root.innerHTML = `
     <div class="card stack"><div class="row between"><h2 style="margin:0">On the clock now</h2><span class="badge ${open?.length ? "ok" : ""}">${open?.length ?? 0}</span></div>
-      ${(open ?? []).map((e) => `<div class="row between"><span>${esc(nameOf(e.user_id))}</span><span class="small muted">since ${timeOf(e.clock_in)} · ${hm(entryMs(e))}</span></div>`).join("") || '<p class="small muted" style="margin:0">Nobody is clocked in.</p>'}
+      ${(open ?? []).map((e) => `<div class="row between"><span>${esc(e.name ?? nameOf(e.user_id))}</span><span class="small muted">since ${timeOf(e.clock_in)} · ${hm(entryMs(e))}</span></div>`).join("") || '<p class="small muted" style="margin:0">Nobody is clocked in.</p>'}
     </div>
     <div class="card section"><h2>This week</h2>
       <table><tr><th>Person</th><th>Hours</th></tr>${Object.entries(byUser).sort((a, b) => b[1] - a[1]).map(([id, ms]) => `<tr><td>${esc(nameOf(id))}</td><td>${hm(ms)}</td></tr>`).join("") || '<tr><td colspan="2" class="muted">No punches yet this week.</td></tr>'}</table>

@@ -40,7 +40,53 @@ Deno.serve(async (req) => {
   const tmId = me?.square_team_member_id as string | null;
   const { data: open } = await service.from("time_entries").select("*").eq("user_id", user.id).is("clock_out", null).maybeSingle();
 
-  if (body.action === "status") return json({ open });
+  // Status checks Square too, so a punch made on the Square register shows up in the app (and vice versa).
+  if (body.action === "status") {
+    if (!tmId || !Deno.env.get("SQUARE_ACCESS_TOKEN")) return json({ open });
+    try {
+      const found = await square("/labor/timecards/search", "POST", {
+        query: { filter: { team_member_ids: [tmId], status: "OPEN" } }, limit: 1,
+      });
+      const tc = found.timecards?.[0];
+      if (tc && !open) {
+        // Clocked in on Square only: mirror it in the hub.
+        const { data: entry } = await service.from("time_entries").insert({
+          user_id: user.id, clock_in: tc.start_at, square_timecard_id: tc.id, square_version: tc.version, square_status: "synced",
+        }).select().single();
+        return json({ open: entry, note: "Picked up your Square clock-in." });
+      }
+      if (open && !tc && open.square_timecard_id) {
+        // Clocked out on Square: close the hub entry with Square's end time.
+        const cur = (await square(`/labor/timecards/${open.square_timecard_id}`)).timecard;
+        if (cur?.status === "CLOSED") {
+          await service.from("time_entries").update({ clock_out: cur.end_at, square_version: cur.version, square_status: "synced" }).eq("id", open.id);
+          return json({ open: null });
+        }
+      }
+      if (open && tc && open.square_timecard_id !== tc.id) {
+        await service.from("time_entries").update({ square_timecard_id: tc.id, square_version: tc.version, square_status: "synced", clock_in: tc.start_at }).eq("id", open.id);
+        const { data: fresh } = await service.from("time_entries").select("*").eq("id", open.id).single();
+        return json({ open: fresh });
+      }
+    } catch (e) {
+      console.error("status reconcile", (e as Error).message);
+    }
+    return json({ open });
+  }
+
+  // Admins: who is on the clock right now according to Square (covers register punches too).
+  if (body.action === "team_status") {
+    if (!["admin", "owner"].includes(caller.profile.role)) return json({ error: "Admins only" }, 403);
+    try {
+      const found = await square("/labor/timecards/search", "POST", {
+        query: { filter: { location_ids: [LOCATION], status: "OPEN" } }, limit: 100,
+      });
+      const { data: people } = await service.from("profiles").select("id, square_team_member_id").not("square_team_member_id", "is", null);
+      const byTm = new Map((people ?? []).map((p) => [p.square_team_member_id, p.id]));
+      const on = (found.timecards ?? []).map((t: { team_member_id: string; start_at: string }) => ({ user_id: byTm.get(t.team_member_id) ?? null, team_member_id: t.team_member_id, clock_in: t.start_at }));
+      return json({ ok: true, on });
+    } catch (e) { return json({ ok: false, error: (e as Error).message }); }
+  }
 
   // Read-only connection test for admins: confirms the Square token works and can see the shop's timecards.
   if (body.action === "square_check") {
