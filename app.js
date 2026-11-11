@@ -55,12 +55,27 @@ function md(src) {
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*(?!\s)(.+?)\*/g, "$1<em>$2</em>")
     .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+  // list: null | "ul" | "ol" | "ol+ul" (bullets nested under the current numbered step)
+  const closeList = () => {
+    if (list === "ol+ul") html += "</ul></li></ol>";
+    else if (list === "ol") html += "</li></ol>";
+    else if (list === "ul") html += "</ul>";
+    list = null;
+  };
   for (const line of lines) {
     let m;
     if ((m = line.match(/^(#{1,3})\s+(.*)/))) { closeList(); const n = m[1].length + 1; html += `<h${n}>${inline(m[2])}</h${n}>`; }
-    else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) { if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; } html += `<li>${inline(m[1])}</li>`; }
-    else if ((m = line.match(/^\s*\d+[.)]\s+(.*)/))) { if (list !== "ol") { closeList(); html += "<ol>"; list = "ol"; } html += `<li>${inline(m[1])}</li>`; }
+    else if ((m = line.match(/^\s*[-*•]\s+(.*)/))) {
+      if (list === "ol") { html += "<ul>"; list = "ol+ul"; }
+      else if (list !== "ul" && list !== "ol+ul") { closeList(); html += "<ul>"; list = "ul"; }
+      html += `<li>${inline(m[1])}</li>`;
+    }
+    else if ((m = line.match(/^\s*(\d+)[.)]\s+(.*)/))) {
+      if (list === "ol+ul") { html += "</ul></li>"; list = "ol"; }
+      else if (list === "ol") html += "</li>";
+      else { closeList(); html += "<ol>"; list = "ol"; }
+      html += `<li value="${m[1]}">${inline(m[2])}`;
+    }
     else if (!line.trim()) closeList();
     else { closeList(); html += `<p>${inline(line)}</p>`; }
   }
@@ -650,19 +665,26 @@ async function adminCall(body) {
 
 async function renderTeam(root) {
   const people = await loadProfiles();
+  const { data: directory } = await sb.from("staff_directory").select("*").order("full_name");
+  const haveLogin = new Set(people.map((p) => (p.email || "").toLowerCase()));
+  const waiting = (directory ?? []).filter((d) => !haveLogin.has((d.email || "").toLowerCase()));
   const assignable = state.profile.role === "owner" ? ["shop", "lead", "admin"] : ["shop", "lead"];
   root.innerHTML = `<div class="row between"><h2>Team & logins</h2><button class="btn sm primary" id="new">+ Person</button></div>
     <div class="list">${people.map((p) => `<div class="item" data-p="${p.id}"><div class="row between">
       <div><div class="title">${esc(p.full_name || p.email)}</div><div class="small muted">${esc(p.email)}${p.title ? " · " + esc(p.title) : ""}</div></div>
       <div class="row"><span class="badge ${p.active ? "" : "bad"}">${p.active ? ROLE_LABEL[p.role] : "Inactive"}</span></div></div></div>`).join("")}</div>
+    ${waiting.length ? `<h2 class="section">From Square, no login yet</h2>
+    <div class="list">${waiting.map((d) => `<div class="item" style="cursor:default"><div class="row between">
+      <div><div class="title">${esc(d.full_name)}</div><div class="small muted">${esc(d.email ?? "")}${d.title ? " · " + esc(d.title) : ""} · ${ROLE_LABEL[d.planned_role]}</div></div>
+      ${assignable.includes(d.planned_role) ? `<button class="btn sm" data-d="${d.id}">Create login</button>` : ""}</div></div>`).join("")}</div>` : ""}
     <p class="small muted">Shop: jobs, inventory counts, SOPs, Ask. Lead: also adds jobs and items, sees suppliers. Admin: also edits SOPs, notes and the team, sees activity and usage.</p>`;
-  root.querySelector("#new").onclick = () => sheet(`
+  const addPerson = (d = {}) => sheet(`
     <form class="stack" id="f"><h2>Add a person</h2>
-      <div><label>Full name</label><input name="full_name" required></div>
-      <div><label>Email (their login)</label><input name="email" type="email" required autocomplete="off"></div>
+      <div><label>Full name</label><input name="full_name" value="${esc(d.full_name)}" required></div>
+      <div><label>Email (their login)</label><input name="email" type="email" value="${esc(d.email)}" required autocomplete="off"></div>
       <div class="grid2">
-        <div><label>Job title</label><input name="title" placeholder="Finisher, CNC…"></div>
-        <div><label>Role</label><select name="role">${assignable.map((r) => `<option value="${r}">${ROLE_LABEL[r]}</option>`).join("")}</select></div>
+        <div><label>Job title</label><input name="title" value="${esc(d.title)}" placeholder="Finisher, CNC…"></div>
+        <div><label>Role</label><select name="role">${assignable.map((r) => `<option value="${r}" ${d.planned_role === r ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}</select></div>
       </div>
       <div><label>Temporary password (8+ characters)</label><input name="password" type="text" minlength="8" required autocomplete="off"></div>
       <p class="small muted" style="margin:0">They'll be asked to choose their own password the first time they sign in.</p>
@@ -674,6 +696,8 @@ async function renderTeam(root) {
       if (ok) { toast("Login created"); close(); renderTeam(root); }
     };
   });
+  root.querySelector("#new").onclick = () => addPerson();
+  root.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => addPerson(directory.find((d) => d.id === b.dataset.d))));
   root.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => {
     const p = people.find((x) => x.id === b.dataset.p);
     if (p.id === state.profile.id || p.role === "owner" || (state.profile.role !== "owner" && p.role === "admin")) return toast("You can't edit this account here.");

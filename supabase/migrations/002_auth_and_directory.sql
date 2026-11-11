@@ -1,0 +1,3 @@
+-- Applied via Supabase: new-user trigger (owner email -> owner), must_change_password flag
+-- + password_changed() RPC, and staff_directory (Square roster for pre-filling logins; admin only).
+-- See the live database for exact definitions.
