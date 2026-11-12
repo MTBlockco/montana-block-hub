@@ -242,3 +242,12 @@ details.collapse > summary { list-style: none; cursor: pointer; }
 details.collapse > summary::-webkit-details-marker { display: none; }
 details.collapse .chev { transition: transform .15s; display: inline-block; }
 details.collapse:not([open]) .chev { transform: rotate(-90deg); }
+.progress { height: 8px; background: var(--surface-2); border-radius: 99px; overflow: hidden; }
+.progress.thin { height: 5px; }
+.progress > span { display: block; height: 100%; background: var(--accent, #b08a3e); border-radius: 99px; }
+.notes .note { padding: 6px 0; border-bottom: 1px solid var(--surface-2); }
+.linkbtn { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 1rem; padding: 0 4px; float: right; }
+.seg { display: flex; background: var(--surface-2); border-radius: 12px; padding: 4px; gap: 4px; }
+.seg button { flex: 1; border: 0; background: transparent; padding: 9px 6px; border-radius: 9px; font-family: Oswald, Inter, sans-serif; letter-spacing: .04em; font-size: .85rem; color: var(--muted); cursor: pointer; }
+.seg button.active { background: var(--accent); color: var(--accent-ink); }
+.copyline { font-family: ui-monospace, Menlo, monospace; font-size: .9rem; padding: 3px 0; cursor: copy; word-break: break-all; }

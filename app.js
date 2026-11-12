@@ -24,7 +24,6 @@ async function fnCall(name, body) {
   if (error) { let msg = "Something went wrong"; try { msg = (await error.context.json()).error; } catch {} return { error: msg }; }
   return data;
 }
-const JOB_STATUSES = ["Queued", "Milling", "Glue-up", "Machining", "Sanding", "Finishing", "QC", "Ready", "Shipped", "Hold"];
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
 const INV_CATS = ["Finished goods", "Board care", "Merch"];
 const SUPPLY_CATS = ["Abrasives", "Finish & oil", "Glue & epoxy", "Magnets", "Fasteners & hardware", "Blades & bits", "Packaging & shipping", "Engraving & branding", "PPE & safety", "Cleaning & shop", "Lumber", "Other"];
@@ -262,7 +261,7 @@ const nameOf = (id) => state.cache.profiles?.find((p) => p.id === id)?.full_name
 async function renderHome(root) {
   const [ann, jobs] = await Promise.all([
     sb.from("announcements").select("*").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(20),
-    sb.from("jobs").select("*").not("status", "in", "(Shipped)").order("due_date", { ascending: true, nullsFirst: false }),
+    sb.from("jobs").select("*").neq("status", "Complete").order("due_date", { ascending: true, nullsFirst: false }),
   ]);
   await loadProfiles();
   const first = (state.profile.full_name || "").split(" ")[0];
@@ -282,6 +281,8 @@ async function renderHome(root) {
       ${MTNS}
     </section>
     <div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
+    <div id="mytimer" class="section"></div>
+    <div id="reqalert"></div>
     ${state.profile.extra_clock ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
     <div class="stack section">
       ${(ann.data ?? []).map((a) => `
@@ -304,7 +305,13 @@ async function renderHome(root) {
   if (state.profile.extra_clock) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
-  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => editJob((jobs.data ?? []).find((j) => j.id === b.dataset.job))));
+  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob((jobs.data ?? []).find((j) => j.id === b.dataset.job), () => renderShell())));
+  renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
+  if (can("admin")) sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open").then(({ count }) => {
+    const el = root.querySelector("#reqalert"); if (!el || !count) return;
+    el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
+    el.querySelector("#goreq").onclick = () => { state.moreOpen = "requests"; go("more"); };
+  });
 }
 
 let clockTimer = null;
@@ -361,16 +368,6 @@ async function renderExtraClock(el) {
   };
 }
 
-function jobRows(list) {
-  if (!list.length) return "";
-  return `<div class="list" style="margin-top:6px">${list.map((j) => {
-    const d = j.due_date ? daysUntil(j.due_date) : null;
-    const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
-    return `<div class="item" data-job="${j.id}"><div class="row between"><span class="title">${esc(j.title)}</span>
-      <span class="badge">${esc(j.status)}</span></div>
-      <div class="small muted">${esc(j.customer ?? "")}${j.due_date ? ` · <span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}</div></div>`;
-  }).join("")}</div>`;
-}
 
 function editAnnouncement(a = {}) {
   sheet(`
@@ -403,73 +400,256 @@ function editAnnouncement(a = {}) {
 }
 
 // ---------------------------------------------------------------- Jobs
+// A job moves through steps (processes). Guys time themselves on a step and log how many pieces they
+// finished; that builds the "minutes per 10 pieces" database for each product and process.
+const DEFAULT_STEPS = ["Mill", "Glue-up", "Flatten", "Cut to size", "CNC / Route", "Sand", "Finish", "Engrave", "Pack"];
 let jobFilter = "Active";
 async function renderJobs(root) {
-  const [{ data: jobs }] = await Promise.all([
-    sb.from("jobs").select("*").order("due_date", { ascending: true, nullsFirst: false }),
+  const [{ data: jobs }, { data: steps }] = await Promise.all([
+    sb.from("jobs").select("*").order("due_date", { ascending: true, nullsFirst: false }).order("created_at"),
+    sb.from("job_steps").select("id, job_id, name, position, done_qty").order("position"),
     loadProfiles(),
   ]);
   state.cache.jobs = jobs ?? [];
-  const filters = ["Active", "Mine", ...JOB_STATUSES];
-  const list = (jobs ?? []).filter((j) =>
-    jobFilter === "Active" ? !["Shipped"].includes(j.status) :
-    jobFilter === "Mine" ? j.assigned_to === state.profile.id && j.status !== "Shipped" :
-    j.status === jobFilter);
+  const byJob = {};
+  (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
+  const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
+  if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
+  const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
   root.innerHTML = `
-    ${topbar("Jobs", can("lead") ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
-    <div class="chips">${filters.map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f}</button>`).join("")}</div>
-    <div style="margin-top:12px">${jobRows(list) || '<div class="empty">No jobs here.</div>'}</div>`;
+    ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
+    <div class="chips">${["Active", "Complete"].map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()} <span class="small">${counts[f]}</span></button>`).join("")}</div>
+    <div id="mytimer" style="margin-top:12px"></div>
+    <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed yet."}</div>`}</div>`;
   wireTopbar(root);
+  renderMyTimer(root.querySelector("#mytimer"), () => renderJobs(root));
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
-  root.querySelector("#new")?.addEventListener("click", () => editJob());
-  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => editJob(jobs.find((j) => j.id === b.dataset.job))));
+  root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
+  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
 }
 
-function editJob(j = {}) {
-  const full = can("lead") || !j.id; // shop employees can change status, assignee and notes only
-  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending");
+// Progress = pieces through all steps / (pieces x steps).
+function jobProgress(j, steps) {
+  if (!steps.length) return 0;
+  const total = steps.length * j.quantity;
+  return Math.round((steps.reduce((a, st) => a + Math.min(st.done_qty, j.quantity), 0) / total) * 100);
+}
+function currentStep(j, steps) { return steps.find((st) => st.done_qty < j.quantity); }
+
+function jobCard(j, steps) {
+  const d = j.due_date ? daysUntil(j.due_date) : null;
+  const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
+  const pct = jobProgress(j, steps), cur = currentStep(j, steps);
+  return `<div class="item" data-job="${j.id}">
+    <div class="row between"><span class="title">${esc(j.title)}</span>
+      ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
+    <div class="small muted">${[j.quantity + " pc", j.product, j.customer, j.assigned_to ? nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}</div>
+    ${j.status !== "Complete" && steps.length ? `<div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div>
+      <div class="small muted" style="margin-top:2px">${pct}%${cur ? ` · Now: ${esc(cur.name)} (${cur.done_qty}/${j.quantity})` : " · All steps done"}</div>` : ""}
+  </div>`;
+}
+
+// Kept for the Home screen lists.
+function jobRows(list) {
+  if (!list.length) return "";
+  return `<div class="list" style="margin-top:6px">${list.map((j) => {
+    const d = j.due_date ? daysUntil(j.due_date) : null;
+    const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
+    return `<div class="item" data-job="${j.id}"><div class="row between"><span class="title">${esc(j.title)}</span>
+      <span class="badge">${j.quantity ?? 1} pc</span></div>
+      <div class="small muted">${esc(j.customer ?? "")}${j.due_date ? ` · <span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}</div></div>`;
+  }).join("")}</div>`;
+}
+
+const fmtMin = (m) => { m = Math.round(m); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
+
+// Banner for whoever has a process timer running (Jobs tab and Home).
+let myTimerTick = null;
+async function renderMyTimer(el, after) {
+  if (!el) return;
+  const { data } = await sb.from("job_timers").select("*, job_steps(name), jobs(title, quantity)").eq("user_id", state.profile.id).is("ended_at", null).maybeSingle();
+  clearInterval(myTimerTick);
+  if (!data) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="card clock on" style="margin:0">
+    <div><div class="state"><span class="dot"></span>Timing: ${esc(data.job_steps?.name ?? "step")}</div>
+      <div class="timer" id="jt">${hm(Date.now() - new Date(data.started_at))}</div>
+      <div class="small muted">${esc(data.jobs?.title ?? "")} · since ${timeOf(data.started_at)}</div></div>
+    <button class="btn punch out" id="jstop">Stop</button></div>`;
+  myTimerTick = setInterval(() => { const t = document.getElementById("jt"); if (!t) return clearInterval(myTimerTick); t.textContent = hm(Date.now() - new Date(data.started_at)); }, 30000);
+  el.querySelector("#jstop").onclick = () => stopTimer(data, after);
+}
+
+function stopTimer(t, after) {
   sheet(`
     <form class="stack" id="f">
-      <h2>${j.id ? esc(j.title) : "New job"}</h2>
-      ${full ? `
-      <div><label>Job</label><input name="title" value="${esc(j.title)}" required placeholder="e.g. 3 walnut cutting boards"></div>
-      <div class="grid2">
-        <div><label>Customer</label><input name="customer" value="${esc(j.customer)}"></div>
-        <div><label>Channel</label><select name="channel">${CHANNELS.map((c) => `<option ${j.channel === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
-        <div><label>Due date</label><input type="date" name="due_date" value="${esc(j.due_date)}"></div>
-        <div><label>Priority</label><select name="priority">${["Low", "Normal", "Rush"].map((p) => `<option ${(j.priority ?? "Normal") === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
-      </div>` : `<p class="muted small" style="margin:0">${esc(j.customer ?? "")} · ${esc(j.channel)}${j.due_date ? " · Due " + fmtDate(j.due_date) : ""}</p>`}
-      <div class="grid2">
-        <div><label>Status</label><select name="status">${JOB_STATUSES.map((s) => `<option ${(j.status ?? "Queued") === s ? "selected" : ""}>${s}</option>`).join("")}</select></div>
-        <div><label>Assigned to</label><select name="assigned_to"><option value="">Unassigned</option>${people.map((p) => `<option value="${p.id}" ${j.assigned_to === p.id ? "selected" : ""}>${esc(p.full_name || p.email)}</option>`).join("")}</select></div>
-      </div>
-      <div><label>Notes</label><textarea name="notes">${esc(j.notes)}</textarea></div>
-      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
-        ${j.id && can("admin") ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
-      ${j.updated_at ? `<p class="small muted" style="margin:0">Last updated ${new Date(j.updated_at).toLocaleString()}${j.updated_by ? " by " + esc(nameOf(j.updated_by)) : ""}</p>` : ""}
+      <h2>Stop timer</h2>
+      <p class="small muted" style="margin:0">${esc(t.job_steps?.name ?? "")} · ${esc(t.jobs?.title ?? "")} · ${hm(Date.now() - new Date(t.started_at))}</p>
+      <div><label>How many pieces did you finish on this step?</label><input name="pieces" type="number" min="0" step="1" inputmode="numeric" required autofocus></div>
+      <div><label>Note (optional)</label><input name="note" placeholder="Interrupted, machine down, extra defects…"></div>
+      <div class="row"><button class="btn primary">Save time</button><button type="button" class="btn" data-close>Keep timing</button></div>
     </form>`, (root, close) => {
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target);
-      const row = { status: f.status, assigned_to: f.assigned_to || null, notes: f.notes || null };
-      if (full) Object.assign(row, { title: f.title, customer: f.customer || null, channel: f.channel, due_date: f.due_date || null, priority: f.priority });
+      const { error } = await sb.rpc("job_timer_stop", { p_pieces: Number(f.pieces), p_note: f.note || null });
+      if (error) return toast(error.message);
+      toast(`Logged ${f.pieces} piece${f.pieces === "1" ? "" : "s"}. Nice work.`);
+      close(); after?.();
+    };
+  });
+}
+
+async function viewJob(j, done) {
+  const [{ data: steps }, { data: timers }, { data: notes }] = await Promise.all([
+    sb.from("job_steps").select("*").eq("job_id", j.id).order("position"),
+    sb.from("job_timers").select("*").eq("job_id", j.id).order("started_at", { ascending: false }),
+    sb.from("job_notes").select("*").eq("job_id", j.id).order("created_at"),
+  ]);
+  const notesFor = (stepId) => (notes ?? []).filter((n) => (n.step_id ?? null) === stepId);
+  const noteList = (list) => list.map((n) => `<div class="note"><div class="small"><strong>${esc(nameOf(n.user_id))}</strong> <span class="muted">${new Date(n.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+      ${n.user_id === state.profile.id || can("admin") ? `<button class="linkbtn" data-delnote="${n.id}" aria-label="Delete note">×</button>` : ""}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join("");
+  const noteForm = (stepId) => `<form class="row" data-noteform="${stepId ?? ""}" style="gap:6px;margin-top:6px"><input name="body" placeholder="Add a note…" autocomplete="off" style="flex:1"><button class="btn sm">Post</button></form>`;
+  const products = [j.product || j.title];
+  const { data: stats } = await sb.from("process_stats").select("*").in("product", products);
+  const statFor = (name) => (stats ?? []).find((x) => x.step === name);
+  const mine = (timers ?? []).find((t) => t.user_id === state.profile.id && !t.ended_at);
+  const mins = (t) => ((t.ended_at ? new Date(t.ended_at) : new Date()) - new Date(t.started_at)) / 60000;
+  const stepMin = (id) => (timers ?? []).filter((t) => t.step_id === id).reduce((a, t) => a + mins(t), 0);
+  const totalMin = (timers ?? []).reduce((a, t) => a + mins(t), 0);
+  const running = (timers ?? []).filter((t) => !t.ended_at);
+  const pct = jobProgress(j, steps ?? []);
+  sheet(`
+    <div class="row between"><span class="badge ${j.status === "Complete" ? "ok" : ""}">${j.status === "Complete" ? "Complete" : "Active"}</span><button class="btn sm" data-close>Close</button></div>
+    <h2 style="margin:10px 0 2px">${esc(j.title)}</h2>
+    <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", j.assigned_to ? "Lead: " + nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}</p>
+    ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
+    <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
+    <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
+    ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
+    <h3 class="section" style="margin-bottom:4px">Steps</h3>
+    <div class="list">${(steps ?? []).map((st) => {
+      const s10 = statFor(st.name);
+      return `<div class="item" style="cursor:default">
+        <div class="row between"><span class="title">${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
+        <div class="progress thin" style="margin:6px 0"><span style="width:${Math.min(100, Math.round(st.done_qty / j.quantity * 100))}%"></span></div>
+        <div class="row between" style="gap:6px;flex-wrap:wrap">
+          <span class="small muted">This job: ${fmtMin(stepMin(st.id))}${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} per 10 pcs` : ""}</span>
+          <span class="row" style="gap:6px">
+            ${j.status !== "Complete" ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
+            <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
+            ${can("lead") && j.status !== "Complete" ? `<button class="btn icon sm" data-fix="${st.id}" aria-label="Adjust count">✎</button>` : ""}
+          </span></div>
+        <div class="notes" id="notes-${st.id}" style="display:none">${noteList(notesFor(st.id))}${noteForm(st.id)}</div></div>`;
+    }).join("") || '<div class="empty">No steps on this job.</div>'}</div>
+    <h3 class="section" style="margin-bottom:4px">Job notes</h3>
+    <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
+    ${(timers ?? []).length ? `<details class="section"><summary class="small">Time log (${timers.length})</summary>
+      <table style="margin-top:6px"><tr><th>Who</th><th>Step</th><th>Time</th><th>Pcs</th></tr>${timers.map((t) => `<tr>
+        <td>${esc(nameOf(t.user_id))}</td><td>${esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "")}</td>
+        <td>${t.ended_at ? fmtMin(mins(t)) : '<span class="badge ok">Running</span>'}</td><td>${t.pieces ?? ""}</td></tr>`).join("")}</table></details>` : ""}
+    <div class="row wrap" style="margin-top:14px">
+      ${can("lead") ? '<button class="btn" id="edit">Edit job</button>' : ""}
+      ${can("lead") && j.status !== "Complete" ? '<button class="btn primary" id="complete">Mark complete</button>' : ""}
+      ${can("lead") && j.status === "Complete" ? '<button class="btn" id="reopen">Reopen</button>' : ""}
+    </div>`, (root, close) => {
+    root.querySelectorAll("[data-start]").forEach((b) => (b.onclick = async () => {
+      const { error } = await sb.rpc("job_timer_start", { p_step: b.dataset.start });
+      if (error) return toast(error.message);
+      toast("Timer started. Stop it when you finish the batch."); close(); done?.();
+    }));
+    root.querySelector("[data-stop]")?.addEventListener("click", () => {
+      close(); stopTimer({ ...mine, job_steps: { name: (steps ?? []).find((s) => s.id === mine.step_id)?.name }, jobs: { title: j.title } }, done);
+    });
+    root.querySelectorAll("[data-notes]").forEach((b) => (b.onclick = () => {
+      const box = root.querySelector("#notes-" + b.dataset.notes); box.style.display = box.style.display === "none" ? "" : "none";
+      if (box.style.display === "") box.querySelector("input")?.focus();
+    }));
+    root.querySelectorAll("[data-noteform]").forEach((f) => (f.onsubmit = async (e) => {
+      e.preventDefault();
+      const body = f.querySelector("input").value.trim(); if (!body) return;
+      const { error } = await sb.from("job_notes").insert({ job_id: j.id, step_id: f.dataset.noteform || null, body });
+      if (error) return toast(error.message);
+      close(); viewJob(j, done);
+    }));
+    root.querySelectorAll("[data-delnote]").forEach((b) => (b.onclick = async () => {
+      if (!confirm("Delete this note?")) return;
+      await sb.from("job_notes").delete().eq("id", b.dataset.delnote); close(); viewJob(j, done);
+    }));
+    root.querySelectorAll("[data-fix]").forEach((b) => (b.onclick = async () => {
+      const st = steps.find((s) => s.id === b.dataset.fix);
+      const v = prompt(`Pieces done on ${st.name} (out of ${j.quantity}):`, st.done_qty);
+      if (v === null || v.trim() === "" || isNaN(Number(v))) return;
+      const { error } = await sb.from("job_steps").update({ done_qty: Math.max(0, Math.round(Number(v))) }).eq("id", st.id);
+      if (error) return toast(error.message);
+      close(); viewJob(j, done);
+    }));
+    root.querySelector("#edit")?.addEventListener("click", () => { close(); editJob(j, done, steps ?? []); });
+    root.querySelector("#complete")?.addEventListener("click", async () => {
+      if (running.length && !confirm("Someone still has a timer running on this job. Complete it anyway?")) return;
+      const { error } = await sb.from("jobs").update({ status: "Complete", completed_at: new Date().toISOString() }).eq("id", j.id);
+      if (error) return toast(error.message);
+      log("update_job", "job", j.id, { to: "Complete" }); toast("Job complete. Moved to COMPLETE."); close(); done?.();
+    });
+    root.querySelector("#reopen")?.addEventListener("click", async () => {
+      await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();
+    });
+  });
+}
+
+async function editJob(j = {}, done, steps = null) {
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending");
+  const { data: past } = await sb.from("jobs").select("product").not("product", "is", null).limit(200);
+  const productOpts = [...new Set([...(past ?? []).map((p) => p.product), ...((state.cache.sopTitles) ?? [])])].filter(Boolean).sort();
+  sheet(`
+    <form class="stack" id="f">
+      <h2>${j.id ? "Edit job" : "New job"}</h2>
+      <div><label>Job</label><input name="title" value="${esc(j.title)}" required placeholder="e.g. MKC order #1042"></div>
+      <div class="grid2">
+        <div><label>Product</label><input name="product" value="${esc(j.product)}" list="prods" placeholder="MKC Cutting Board"><datalist id="prods">${productOpts.map((p) => `<option>${esc(p)}</option>`).join("")}</datalist></div>
+        <div><label>Pieces</label><input name="quantity" type="number" min="1" step="1" inputmode="numeric" value="${esc(j.quantity ?? 10)}" required></div>
+        <div><label>Customer</label><input name="customer" value="${esc(j.customer)}"></div>
+        <div><label>Channel</label><select name="channel">${CHANNELS.map((c) => `<option ${j.channel === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
+        <div><label>Due date</label><input type="date" name="due_date" value="${esc(j.due_date)}"></div>
+        <div><label>Priority</label><select name="priority">${["Low", "Normal", "Rush"].map((p) => `<option ${(j.priority ?? "Normal") === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
+        <div><label>Lead on this job</label><select name="assigned_to"><option value="">—</option>${people.map((p) => `<option value="${p.id}" ${j.assigned_to === p.id ? "selected" : ""}>${esc(p.full_name || p.email)}</option>`).join("")}</select></div>
+      </div>
+      ${j.id ? "" : `<div><label>Steps (one per line, in order)</label><textarea name="steps" style="min-height:170px">${DEFAULT_STEPS.join("\n")}</textarea>
+        <p class="small muted" style="margin:4px 0 0">Use the same step names every time so the timing averages line up.</p></div>`}
+      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(j.notes)}</textarea></div>
+      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
+        ${j.id && can("admin") ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
+    </form>`, (root, close) => {
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const row = { title: f.title, product: f.product || null, quantity: Math.max(1, Math.round(Number(f.quantity))), customer: f.customer || null,
+        channel: f.channel, due_date: f.due_date || null, priority: f.priority, assigned_to: f.assigned_to || null, notes: f.notes || null };
+      if (!j.id) row.status = "Active";
       const res = j.id ? await sb.from("jobs").update(row).eq("id", j.id).select().single() : await sb.from("jobs").insert(row).select().single();
       if (res.error) return toast(res.error.message);
-      log(j.id ? "update_job" : "create_job", "job", res.data.id, j.id && j.status !== f.status ? { from: j.status, to: f.status } : null);
-      close(); renderShell();
+      if (!j.id) {
+        const names = String(f.steps ?? "").split("\n").map((x) => x.trim()).filter(Boolean);
+        if (names.length) {
+          const r2 = await sb.from("job_steps").insert(names.map((name, position) => ({ job_id: res.data.id, name, position })));
+          if (r2.error) toast("Job saved, but steps didn't: " + r2.error.message);
+        }
+      }
+      log(j.id ? "update_job" : "create_job", "job", res.data.id, { title: row.title });
+      close(); done ? done() : renderShell();
     };
     root.querySelector("#del")?.addEventListener("click", async () => {
-      if (!confirm("Delete this job? This can't be undone.")) return;
+      if (!confirm("Delete this job and its time log? This can't be undone.")) return;
       await sb.from("jobs").delete().eq("id", j.id);
       log("delete_job", "job", j.id, { title: j.title });
-      close(); renderShell();
+      close(); done ? done() : renderShell();
     });
   });
 }
 
 // ---------------------------------------------------------------- Inventory
-let invCat = "All", invQ = "";
+let invCat = "All", invQ = "", invTab = "Website";
 async function renderInventory(root) {
+  if (invTab === "Wholesale") return renderWholesale(root);
   const { data: items } = await sb.from("inventory_items").select("*").eq("source", "shopify").order("category").order("name");
   state.cache.inventory = items ?? [];
   let suppliers = [];
@@ -482,6 +662,7 @@ async function renderInventory(root) {
   const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
     ${topbar("Products", canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button>' : "")}
+    ${productTabs()}
     <input id="q" placeholder="Search boards, SKU…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
     <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
@@ -502,6 +683,7 @@ async function renderInventory(root) {
   const qEl = root.querySelector("#q");
   qEl.oninput = () => { invQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => { renderInventory(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { invCat = b.dataset.c; renderInventory(root); }));
+  wireProductTabs(root);
   root.querySelector("#new")?.addEventListener("click", () => editItem());
   root.querySelector("#sync")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "Syncing…";
@@ -531,6 +713,112 @@ async function renderInventory(root) {
     item.quantity = next;
     b.parentElement.querySelector(".n").innerHTML = `${next} <span class="small muted">${esc(item.unit)}</span>`;
   }));
+}
+
+function productTabs() {
+  return `<div class="seg" style="margin-bottom:10px">${["Website", "Wholesale"].map((t) => `<button class="${invTab === t ? "active" : ""}" data-tab="${t}">${t === "Website" ? "WEBSITE INVENTORY" : "WHOLESALE"}</button>`).join("")}</div>`;
+}
+function wireProductTabs(root) {
+  root.querySelectorAll("[data-tab]").forEach((b) => (b.onclick = () => { invTab = b.dataset.tab; renderInventory(root); }));
+}
+
+// Wholesale / show / distributor stock: random-pattern pieces that aren't on the website. Database only, never Shopify.
+let whQ = "";
+async function renderWholesale(root) {
+  const { data: items } = await sb.from("inventory_items").select("*").eq("source", "wholesale").order("category").order("name");
+  const q = whQ.toLowerCase();
+  const list = (items ?? []).filter((i) => !q || [i.name, i.category, i.species, i.location, i.notes].join(" ").toLowerCase().includes(q));
+  const groups = {}; list.forEach((i) => (groups[i.category || "Other"] ??= []).push(i));
+  const totalPcs = (items ?? []).reduce((a, i) => a + Number(i.quantity), 0);
+  const totalVal = (items ?? []).reduce((a, i) => a + Number(i.quantity) * Number(i.wholesale_price ?? 0), 0);
+  root.innerHTML = `
+    ${topbar("Products", canInv() ? '<button class="btn sm primary" id="new">+ Item</button>' : "")}
+    ${productTabs()}
+    <input id="q" placeholder="Search patterns, species, bins…" value="${esc(whQ)}" style="margin-bottom:6px">
+    <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && canInv() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
+    ${Object.entries(groups).map(([cat, its]) => `<h2 class="section">${esc(cat)}</h2>
+      <div class="list">${its.map((i) => `
+        <div class="item hold" data-id="${i.id}"><div class="row between">
+          ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
+          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
+            <div class="small muted">${[i.species, i.location, i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
+          <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
+            <span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)}</span>
+            ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}</div>
+        </div></div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No wholesale items yet. Tap + Item to add your random-pattern stock."}</div>`}`;
+  wireTopbar(root); wireProductTabs(root);
+  const qEl = root.querySelector("#q");
+  qEl.oninput = () => { whQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => renderWholesale(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }), 250); };
+  const again = () => renderWholesale(root);
+  root.querySelector("#new")?.addEventListener("click", () => editWholesale({}, items ?? [], again));
+  root.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => { const it = items.find((i) => i.id === b.dataset.open); canInv() ? editWholesale(it, items, again) : toast(`${it.name}: ${Number(it.quantity)} on hand`); }));
+  root.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    const item = items.find((i) => i.id === b.closest("[data-id]").dataset.id);
+    const next = Math.max(0, Number(item.quantity) + Number(b.dataset.adj));
+    const { error } = await sb.from("inventory_items").update({ quantity: next }).eq("id", item.id);
+    if (error) return toast(error.message);
+    log("adjust_inventory", "inventory", item.id, { name: item.name, from: Number(item.quantity), to: next, wholesale: true });
+    item.quantity = next; b.parentElement.querySelector(".n").textContent = next;
+  }));
+  if (canInv()) root.querySelectorAll(".item.hold").forEach((el) => onHold(el, () => {
+    const it = items.find((i) => i.id === el.dataset.id);
+    sheet(`<div class="row between"><h2 style="margin:0">${esc(it.name)}</h2><button class="btn sm" data-close>Close</button></div>
+      <p class="small muted" style="margin:4px 0 12px">${Number(it.quantity)} on hand</p>
+      <div class="stack"><button class="btn" id="count">Set count…</button><button class="btn" id="edit">Edit details</button><button class="btn danger" id="del">Delete</button></div>`, (r, close) => {
+      r.querySelector("#count").onclick = async () => {
+        const v = prompt(`How many ${it.name} on hand?`, Number(it.quantity)); if (v === null || v.trim() === "" || isNaN(Number(v))) return;
+        const { error } = await sb.from("inventory_items").update({ quantity: Math.max(0, Number(v)) }).eq("id", it.id);
+        if (error) return toast(error.message); close(); again();
+      };
+      r.querySelector("#edit").onclick = () => { close(); editWholesale(it, items, again); };
+      r.querySelector("#del").onclick = async () => {
+        if (!confirm(`Delete ${it.name}? This can't be undone.`)) return;
+        const { error } = await sb.from("inventory_items").delete().eq("id", it.id);
+        if (error) return toast(error.message); log("delete_inventory", "inventory", it.id, { name: it.name }); close(); again();
+      };
+    });
+  }));
+}
+
+function editWholesale(i, all, done) {
+  const cats = [...new Set(["Cutting boards", "Butcher blocks", "Charcuterie", "Knife blocks & rails", "Coasters & small goods", ...all.map((x) => x.category).filter(Boolean)])];
+  sheet(`
+    <form class="stack" id="f"><h2>${i.id ? "Edit wholesale item" : "New wholesale item"}</h2>
+      <div><label>Item</label><input name="name" value="${esc(i.name)}" required placeholder="Random pattern end grain 12x16"></div>
+      <div class="row" style="align-items:center">
+        <img id="ph" src="${esc(i.photo_url ?? "")}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:10px;background:var(--surface-2);${i.photo_url ? "" : "display:none"}">
+        <label class="btn sm" style="margin:0;color:var(--text)">${i.photo_url ? "Change photo" : "Add photo"}<input type="file" accept="image/*" capture="environment" id="photo" style="display:none"></label></div>
+      <div class="grid2">
+        <div><label>Category</label><input name="category" value="${esc(i.category)}" list="whcats" required><datalist id="whcats">${cats.map((c) => `<option>${esc(c)}</option>`).join("")}</datalist></div>
+        <div><label>Species / pattern</label><input name="species" value="${esc(i.species)}" placeholder="Walnut & maple, random"></div>
+        <div><label>On hand</label><input name="quantity" type="number" min="0" step="1" value="${esc(i.quantity ?? 0)}" required></div>
+        <div><label>Wholesale price (each)</label><input name="wholesale_price" type="number" step="0.01" value="${esc(i.wholesale_price)}"></div>
+        <div><label>Where it's kept</label><input name="location" value="${esc(i.location)}" placeholder="Show bins, rack C"></div>
+        <div><label>Low at</label><input name="reorder_point" type="number" step="1" value="${esc(i.reorder_point)}"></div>
+      </div>
+      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(i.notes)}</textarea></div>
+      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (root, close) => {
+    let photoFile = null;
+    root.querySelector("#photo").onchange = (e) => { photoFile = e.target.files[0] ?? null; if (photoFile) { const ph = root.querySelector("#ph"); ph.src = URL.createObjectURL(photoFile); ph.style.display = ""; } };
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target), num = (x) => (x === "" ? null : Number(x));
+      const row = { name: f.name, category: f.category, species: f.species || null, quantity: Number(f.quantity), unit: "ea", wholesale_price: num(f.wholesale_price),
+        location: f.location || null, reorder_point: num(f.reorder_point), notes: f.notes || null, source: "wholesale" };
+      if (photoFile) {
+        const path = `wholesale/${crypto.randomUUID()}.jpg`;
+        const up = await sb.storage.from("supplies").upload(path, await shrinkImage(photoFile, 1200), { contentType: "image/jpeg" });
+        if (up.error) return toast("Photo upload failed: " + up.error.message);
+        row.photo_url = sb.storage.from("supplies").getPublicUrl(path).data.publicUrl;
+      }
+      const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
+      if (res.error) return toast(res.error.message);
+      log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: row.name, quantity: row.quantity, wholesale: true });
+      close(); done();
+    };
+  });
 }
 
 function setShopifyCount(item, listRoot) {
@@ -1085,20 +1373,21 @@ async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
     { k: "hours", label: "My hours" },
-    ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
+    ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "requests", label: "Time card edit requests" }, { k: "admininfo", label: "Admin info (passwords & logins)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
+  const openReq = can("admin") ? (await sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open")).count ?? 0 : 0;
   root.innerHTML = `${topbar("More")}
-    <div class="list">${sections.map((s) => `<div class="item" data-sec="${s.k}"><div class="title">${s.label}</div></div>`).join("")}</div>
+    <div class="list">${sections.map((s) => `<div class="item" data-sec="${s.k}"><div class="row between"><span class="title">${s.label}</span>${s.k === "requests" && openReq ? `<span class="badge warn">${openReq} open</span>` : ""}</div></div>`).join("")}</div>
     <div id="sec" class="section"></div>`;
   wireTopbar(root);
   const sec = root.querySelector("#sec");
   const open = async (k) => {
     root.querySelectorAll("[data-sec]").forEach((el) => (el.style.borderColor = el.dataset.sec === k ? "var(--accent)" : ""));
     sec.innerHTML = '<div class="empty">Loading…</div>';
-    await ({ account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
+    await ({ account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, requests: renderTimecardRequests, admininfo: renderAdminInfo, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
   };
   root.querySelectorAll("[data-sec]").forEach((b) => (b.onclick = () => open(b.dataset.sec)));
-  open("account");
+  open(state.moreOpen || "account"); state.moreOpen = null;
 }
 
 async function renderAccount(root) {
@@ -1123,6 +1412,95 @@ const entryMs = (e) => (e.clock_out ? new Date(e.clock_out) : new Date()) - new 
 const sqBadge = (e) => e.square_status === "synced" ? '<span class="badge ok">Square ✓</span>' : e.square_status === "error" ? `<span class="badge bad" title="${esc(e.square_error)}">Square ✗</span>` : '<span class="badge">Not in Square yet</span>';
 
 async function renderMyHours(root) {
+  await renderMyHoursInner(root);
+  const { data: reqs } = await sb.from("timecard_requests").select("*").eq("user_id", state.profile.id).order("created_at", { ascending: false }).limit(10);
+  root.insertAdjacentHTML("afterbegin", `<div class="card stack" style="margin-bottom:12px">
+    <div class="row between"><h2 style="margin:0">Something wrong on your time card?</h2><button class="btn sm primary" id="reqedit">Request time card edit</button></div>
+    ${(reqs ?? []).length ? `<table><tr><th>Day</th><th>Request</th><th>Status</th></tr>${reqs.map((r) => `<tr><td>${fmtDate(r.work_date)}</td><td class="small">${esc(r.details)}${r.resolution_note ? `<br><span class="muted">↳ ${esc(r.resolution_note)}</span>` : ""}</td>
+      <td>${r.status === "open" ? '<span class="badge warn">Waiting</span>' : r.status === "done" ? '<span class="badge ok">Fixed</span>' : '<span class="badge bad">Declined</span>'}</td></tr>`).join("")}</table>` : '<p class="small muted" style="margin:0">Forgot to clock out, wrong time, missed a punch? Send it here and Brittany will fix it in Square.</p>'}
+  </div>`);
+  root.querySelector("#reqedit").onclick = () => sheet(`
+    <form class="stack" id="f"><h2>Request time card edit</h2>
+      <div><label>Which day?</label><input type="date" name="work_date" required value="${new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" })}"></div>
+      <div><label>What needs fixing?</label><textarea name="details" required placeholder="Forgot to clock out. I left at 4:30 pm." style="min-height:100px"></textarea></div>
+      <div class="row"><button class="btn primary">Send request</button><button type="button" class="btn" data-close>Cancel</button></div>
+    </form>`, (r, close) => {
+    r.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const { error } = await sb.from("timecard_requests").insert({ user_id: state.profile.id, work_date: f.work_date, details: f.details });
+      if (error) return toast(error.message);
+      log("timecard_request", "timecard", null, { date: f.work_date });
+      toast("Sent. Brittany will take care of it."); close(); renderMyHours(root);
+    };
+  });
+}
+
+async function renderTimecardRequests(root) {
+  await loadProfiles();
+  const { data } = await sb.from("timecard_requests").select("*").order("status").order("created_at", { ascending: false }).limit(60);
+  const open = (data ?? []).filter((r) => r.status === "open"), closed = (data ?? []).filter((r) => r.status !== "open");
+  const card = (r) => `<div class="item" style="cursor:default"><div class="row between"><span class="title">${esc(nameOf(r.user_id))} · ${fmtDate(r.work_date)}</span>
+      ${r.status === "open" ? '<span class="badge warn">Open</span>' : r.status === "done" ? '<span class="badge ok">Done</span>' : '<span class="badge bad">Declined</span>'}</div>
+    <div style="white-space:pre-wrap;margin:4px 0">${esc(r.details)}</div>
+    <div class="small muted">Sent ${new Date(r.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.resolved_by ? ` · ${r.status === "done" ? "Fixed" : "Declined"} by ${esc(nameOf(r.resolved_by))} ${new Date(r.resolved_at).toLocaleDateString([], { month: "short", day: "numeric" })}` : ""}${r.resolution_note ? ` · ${esc(r.resolution_note)}` : ""}</div>
+    ${r.status === "open" ? `<div class="row" style="margin-top:8px;gap:6px"><button class="btn sm primary" data-done="${r.id}">✓ Done, fixed in Square</button><button class="btn sm" data-decline="${r.id}">Decline</button></div>` : ""}</div>`;
+  root.innerHTML = `<div class="card stack"><div class="row between"><h2 style="margin:0">Time card edit requests</h2><span class="badge ${open.length ? "warn" : "ok"}">${open.length} open</span></div>
+    <p class="small muted" style="margin:0">Make the change in Square Team, then tap Done. The employee sees it marked fixed.</p></div>
+    <div class="list section">${open.map(card).join("") || '<div class="empty">Nothing waiting. 🎉</div>'}</div>
+    ${closed.length ? `<details class="section"><summary class="small">Finished (${closed.length})</summary><div class="list" style="margin-top:8px">${closed.map(card).join("")}</div></details>` : ""}`;
+  const resolve = async (id, status) => {
+    const note = prompt(status === "done" ? "Note for the employee (optional):" : "Why is it declined? (they'll see this)", "");
+    if (note === null) return;
+    const { error } = await sb.from("timecard_requests").update({ status, resolved_by: state.profile.id, resolved_at: new Date().toISOString(), resolution_note: note.trim() || null }).eq("id", id);
+    if (error) return toast(error.message);
+    toast(status === "done" ? "Marked done" : "Declined"); renderTimecardRequests(root);
+  };
+  root.querySelectorAll("[data-done]").forEach((b) => (b.onclick = () => resolve(b.dataset.done, "done")));
+  root.querySelectorAll("[data-decline]").forEach((b) => (b.onclick = () => resolve(b.dataset.decline, "declined")));
+}
+
+// Admin-only reference info: CNC logins, vendor portals, codes. Hidden from everyone else by the database.
+async function renderAdminInfo(root) {
+  const { data } = await sb.from("admin_info").select("*").order("category").order("title");
+  const groups = {}; (data ?? []).forEach((x) => (groups[x.category] ??= []).push(x));
+  root.innerHTML = `<div class="card stack"><div class="row between"><h2 style="margin:0">Admin info</h2><button class="btn sm primary" id="new">+ Add</button></div>
+      <p class="small muted" style="margin:0">Only admins can see this page. Tap an entry to show it, tap a line to copy it.</p></div>
+    ${Object.entries(groups).map(([cat, list]) => `<h3 class="section">${esc(cat)}</h3><div class="list">${list.map((x) => `
+      <div class="item" data-ai="${x.id}"><div class="row between"><span class="title">${esc(x.title)}</span><span class="small muted">Show ▾</span></div>
+        <div class="secret" style="display:none">${x.body.split("\n").map((ln) => `<div class="copyline" data-copy="${esc(ln)}">${esc(ln) || "&nbsp;"}</div>`).join("")}
+          <div class="row" style="margin-top:8px"><button class="btn sm" data-edit="${x.id}">Edit</button></div></div></div>`).join("")}</div>`).join("") || '<div class="empty section">Nothing saved yet. Add CNC logins, vendor portals, Wi-Fi and alarm codes here.</div>'}`;
+  const edit = (x = {}) => sheet(`
+    <form class="stack" id="f"><h2>${x.id ? "Edit" : "Add admin info"}</h2>
+      <div class="grid2"><div><label>Title</label><input name="title" value="${esc(x.title)}" required placeholder="CNC controller login"></div>
+        <div><label>Group</label><input name="category" value="${esc(x.category ?? "General")}" list="aicats"><datalist id="aicats">${["Machines", "Vendor portals", "Shop", "Software", "General"].map((c) => `<option>${c}</option>`).join("")}</datalist></div></div>
+      <div><label>Details</label><textarea name="body" style="min-height:140px;font-family:ui-monospace,monospace" placeholder="User: shop&#10;Password: …&#10;Notes">${esc(x.body)}</textarea></div>
+      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>${x.id ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
+    </form>`, (r, close) => {
+    r.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const row = { title: f.title, category: f.category || "General", body: f.body, updated_by: state.profile.id, updated_at: new Date().toISOString() };
+      const res = x.id ? await sb.from("admin_info").update(row).eq("id", x.id) : await sb.from("admin_info").insert(row);
+      if (res.error) return toast(res.error.message);
+      close(); renderAdminInfo(root);
+    };
+    r.querySelector("#del")?.addEventListener("click", async () => { if (!confirm("Delete this entry?")) return; await sb.from("admin_info").delete().eq("id", x.id); close(); renderAdminInfo(root); });
+  });
+  root.querySelector("#new").onclick = () => edit();
+  root.querySelectorAll("[data-ai]").forEach((el) => (el.onclick = (e) => {
+    if (e.target.closest("[data-edit]") || e.target.closest("[data-copy]")) return;
+    const box = el.querySelector(".secret"); box.style.display = box.style.display === "none" ? "" : "none";
+  }));
+  root.querySelectorAll("[data-copy]").forEach((el) => (el.onclick = async (e) => {
+    e.stopPropagation();
+    const v = el.dataset.copy.includes(":") ? el.dataset.copy.split(":").slice(1).join(":").trim() : el.dataset.copy;
+    try { await navigator.clipboard.writeText(v); toast("Copied"); } catch { toast("Couldn't copy on this device"); }
+  }));
+  root.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); edit(data.find((x) => x.id === b.dataset.edit)); }));
+}
+
+async function renderMyHoursInner(root) {
   const since = weekStart(-1);
   const { data } = await sb.from("time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
   const thisWk = weekStart(0);
