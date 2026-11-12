@@ -260,10 +260,9 @@ const nameOf = (id) => state.cache.profiles?.find((p) => p.id === id)?.full_name
 
 // ---------------------------------------------------------------- Home
 async function renderHome(root) {
-  const [ann, jobs, inv] = await Promise.all([
+  const [ann, jobs] = await Promise.all([
     sb.from("announcements").select("*").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(20),
     sb.from("jobs").select("*").not("status", "in", "(Shipped)").order("due_date", { ascending: true, nullsFirst: false }),
-    sb.from("inventory_items").select("*"),
   ]);
   await loadProfiles();
   const first = (state.profile.full_name || "").split(" ")[0];
@@ -271,7 +270,6 @@ async function renderHome(root) {
   const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const myJobs = (jobs.data ?? []).filter((j) => j.assigned_to === state.profile.id);
   const dueSoon = (jobs.data ?? []).filter((j) => j.due_date && daysUntil(j.due_date) <= 7);
-  const low = (inv.data ?? []).filter(isLow);
 
   root.innerHTML = `
     <section class="hero wood">
@@ -300,11 +298,6 @@ async function renderHome(root) {
         ${jobRows(myJobs) || '<p class="muted small">Nothing assigned to you.</p>'}</div>
       <div class="card"><div class="row between"><h2>Due this week</h2><span class="badge ${dueSoon.some((j) => daysUntil(j.due_date) < 0) ? "bad" : ""}">${dueSoon.length}</span></div>
         ${jobRows(dueSoon) || '<p class="muted small">Nothing due in the next 7 days.</p>'}</div>
-    </div>
-    <div class="card section"><div class="row between"><h2>Low stock</h2><span class="badge ${low.length ? "warn" : "ok"}">${low.length}</span></div>
-      ${low.length ? `<table><tr><th>Item</th><th>On hand</th><th>Reorder at</th></tr>${low.map((i) =>
-        `<tr><td>${esc(i.name)}${i.species ? ` <span class="muted small">${esc(i.species)} ${esc(i.thickness ?? "")}</span>` : ""}</td><td>${i.quantity} ${esc(i.unit)}</td><td>${i.reorder_point}</td></tr>`).join("")}</table>`
-        : '<p class="muted small">Everything is above its reorder point.</p>'}
     </div>`;
   wireTopbar(root);
   renderClock(root.querySelector("#clock"));
@@ -641,10 +634,15 @@ async function renderSupplies(root) {
     body.querySelector("#newv")?.addEventListener("click", () => editVendor({}, () => renderSupplies(root)));
     body.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => canInv() ? editVendor(vendors.find((v) => v.id === b.dataset.v), () => renderSupplies(root)) : null));
   } else {
-    body.innerHTML = Object.entries(groups).map(([cat, its]) => `
+    const lowItems = (items ?? []).filter(isLow);
+    const reorderCard = supCat === "All" && !q && lowItems.length ? `
+      <div class="card" style="margin-bottom:6px"><div class="row between"><h2 style="margin:0">Needs reorder</h2><span class="badge warn">${lowItems.length}</span></div>
+        <table style="margin-top:6px"><tr><th>Item</th><th>On hand</th><th>Reorder at</th><th>Vendor</th></tr>${lowItems.map((i) =>
+          `<tr data-open="${i.id}" style="cursor:pointer"><td>${esc(i.name)}</td><td>${Number(i.quantity)} ${esc(i.unit)}</td><td>${i.reorder_point}</td><td class="small">${esc(vName(i.supplier_id))}</td></tr>`).join("")}</table></div>` : "";
+    body.innerHTML = reorderCard + Object.entries(groups).map(([cat, its]) => `
       <h2 class="section">${esc(cat)}</h2>
       <div class="list">${its.map((i) => `
-        <div class="item" data-id="${i.id}">
+        <div class="item hold" data-id="${i.id}">
           <div class="row between">
             ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
             <div style="min-width:0;flex:1" data-open="${i.id}">
@@ -659,6 +657,7 @@ async function renderSupplies(root) {
           </div>
         </div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No supplies tracked yet."}</div>`;
     body.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => supplyDetail(items.find((i) => i.id === b.dataset.open), vendors ?? [], () => renderSupplies(root))));
+    if (canInv()) body.querySelectorAll(".item.hold").forEach((el) => onHold(el, () => supplyActions(items.find((i) => i.id === el.dataset.id), vendors ?? [], () => renderSupplies(root))));
     body.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
       e.stopPropagation();
       const id = b.closest("[data-id]").dataset.id;
@@ -677,6 +676,58 @@ async function renderSupplies(root) {
   qEl.oninput = () => { supQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => renderSupplies(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }), 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { supCat = b.dataset.c; renderSupplies(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editSupply({}, vendors ?? [], () => renderSupplies(root)));
+}
+
+// Press and hold (or right-click on a computer) to open a quick-action menu.
+function onHold(el, fn, ms = 550) {
+  let t = null, held = false, x0 = 0, y0 = 0;
+  const cancel = () => { clearTimeout(t); t = null; };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button && e.button !== 0) return;
+    held = false; x0 = e.clientX; y0 = e.clientY;
+    t = setTimeout(() => { held = true; navigator.vibrate?.(25); fn(); }, ms);
+  });
+  el.addEventListener("pointermove", (e) => { if (t && Math.hypot(e.clientX - x0, e.clientY - y0) > 10) cancel(); });
+  ["pointerup", "pointerleave", "pointercancel"].forEach((ev) => el.addEventListener(ev, cancel));
+  el.addEventListener("click", (e) => { if (held) { e.stopPropagation(); e.preventDefault(); held = false; } }, true);
+  el.addEventListener("contextmenu", (e) => { e.preventDefault(); if (!held) fn(); });
+}
+
+function supplyActions(i, vendors, done) {
+  sheet(`
+    <div class="row between"><h2 style="margin:0">${esc(i.name)}</h2><button class="btn sm" data-close>Close</button></div>
+    <p class="small muted" style="margin:4px 0 12px">${Number(i.quantity)} ${esc(i.unit)} on hand</p>
+    <div class="stack">
+      <button class="btn" id="count">Set count…</button>
+      <button class="btn" id="ordered">Mark ordered today</button>
+      <button class="btn" id="edit">Edit details</button>
+      <button class="btn danger" id="del">Delete</button>
+    </div>`, (root, close) => {
+    root.querySelector("#count").onclick = async () => {
+      const v = prompt(`How many ${i.unit} of ${i.name} are on hand?`, Number(i.quantity));
+      if (v === null || v.trim() === "" || isNaN(Number(v))) return;
+      const next = Math.max(0, Number(v));
+      const { error } = await sb.from("inventory_items").update({ quantity: next }).eq("id", i.id);
+      if (error) return toast(error.message);
+      log("adjust_inventory", "inventory", i.id, { name: i.name, from: Number(i.quantity), to: next });
+      toast("Count saved"); close(); done();
+    };
+    root.querySelector("#ordered").onclick = async () => {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+      const { error } = await sb.from("inventory_items").update({ last_ordered: today }).eq("id", i.id);
+      if (error) return toast(error.message);
+      log("update_inventory", "inventory", i.id, { name: i.name, last_ordered: today });
+      toast("Marked as ordered"); close(); done();
+    };
+    root.querySelector("#edit").onclick = () => { close(); editSupply(i, vendors, done); };
+    root.querySelector("#del").onclick = async () => {
+      if (!confirm(`Delete ${i.name} from Supplies? This can't be undone.`)) return;
+      const { error } = await sb.from("inventory_items").delete().eq("id", i.id);
+      if (error) return toast(error.message);
+      log("delete_inventory", "inventory", i.id, { name: i.name });
+      toast("Deleted"); close(); done();
+    };
+  });
 }
 
 // Phone photos are huge; shrink to a reasonable JPEG before uploading.
@@ -818,7 +869,7 @@ async function renderSops(root) {
     ${Object.entries(groups).map(([cat, items]) => `
       <h2 class="section">${esc(cat)}</h2>
       <div class="list">${items.map((s) => `<div class="item" data-sop="${s.id}"><div class="title">${esc(s.title)}</div>
-        <div class="small muted">Updated ${fmtDate(s.updated_at)}${s.min_role !== "shop" ? ` · ${ROLE_LABEL[s.min_role]}s+` : ""}</div></div>`).join("")}</div>`).join("")
+        <div class="small muted">Updated ${fmtDate(s.updated_at)}${(s.photos ?? []).length ? ` · 📷 ${s.photos.length}` : ""}${s.min_role !== "shop" ? ` · ${ROLE_LABEL[s.min_role]}s+` : ""}</div></div>`).join("")}</div>`).join("")
       || '<div class="empty">No SOPs yet.</div>'}`;
   wireTopbar(root);
   const qEl = root.querySelector("#q");
@@ -827,14 +878,40 @@ async function renderSops(root) {
   root.querySelectorAll("[data-sop]").forEach((b) => (b.onclick = () => viewSop(sops.find((s) => s.id === b.dataset.sop))));
 }
 
-function viewSop(s) {
+// SOP photos live in a private bucket; turn stored paths into links that expire after an hour.
+async function sopPhotoUrls(photos) {
+  const list = (photos ?? []).map((p) => ({ ...p }));
+  const paths = list.filter((p) => p.path).map((p) => p.path);
+  if (paths.length) {
+    const { data } = await sb.storage.from("sops").createSignedUrls(paths, 3600);
+    (data ?? []).forEach((d) => { const p = list.find((x) => x.path === d.path); if (p && d.signedUrl) p.url = d.signedUrl; });
+  }
+  return list.filter((p) => p.url);
+}
+
+async function viewSop(s) {
   log("view_sop", "sop", s.id, { title: s.title });
+  s = { ...s, photos: await sopPhotoUrls(s.photos) };
   sheet(`
     <div class="row between"><span class="badge">${esc(s.category)}</span><button class="btn sm" data-close>Close</button></div>
     <h1 style="margin-top:10px">${esc(s.title)}</h1>
     <div class="prose">${md(s.body)}</div>
+    ${(s.photos ?? []).length ? `<h2 class="section">Photos &amp; diagrams</h2>
+      <div class="sop-photos">${s.photos.map((p, n) => `<figure data-ph="${n}"><img src="${esc(p.url)}" alt="${esc(p.caption || s.title)}" loading="lazy">${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>` : ""}
     ${can("admin") ? '<div class="row" style="margin-top:14px"><button class="btn" id="edit">Edit</button></div>' : ""}`,
-  (root, close) => root.querySelector("#edit")?.addEventListener("click", () => { close(); editSop(s); }));
+  (root, close) => {
+    root.querySelector("#edit")?.addEventListener("click", () => { close(); editSop(s); });
+    root.querySelectorAll("[data-ph]").forEach((f) => (f.onclick = () => photoViewer(s.photos[Number(f.dataset.ph)])));
+  });
+}
+
+// Full-screen view so diagrams can be pinch-zoomed on a phone.
+function photoViewer(p) {
+  const d = document.createElement("div");
+  d.className = "viewer";
+  d.innerHTML = `<img src="${esc(p.url)}" alt="${esc(p.caption ?? "")}">${p.caption ? `<div class="cap">${esc(p.caption)}</div>` : ""}<button class="btn sm">Close</button>`;
+  d.onclick = () => d.remove();
+  document.body.appendChild(d);
 }
 
 function editSop(s = {}) {
@@ -848,13 +925,44 @@ function editSop(s = {}) {
       </div>
       <datalist id="cats">${["Safety", "Milling", "Glue-up", "Machining", "Sanding", "Finishing", "Packing & shipping", "Orders", "Cleaning", "General"].map((c) => `<option>${c}</option>`).join("")}</datalist>
       <div><label>Procedure</label><textarea name="body" style="min-height:280px" placeholder="1. Step one&#10;2. Step two&#10;- Use **bold** for warnings">${esc(s.body)}</textarea></div>
+      <div><label>Photos &amp; diagrams</label><div id="phs" class="stack"></div>
+        <label class="btn sm" style="margin-top:6px;color:var(--text)">+ Add photos<input type="file" accept="image/*" multiple id="addph" style="display:none"></label></div>
       <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
         ${s.id ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
     </form>`, (root, close) => {
+    // Existing photos keep their storage path; new ones hold a File until Save.
+    const photos = (s.photos ?? []).map((p) => ({ ...p }));
+    sopPhotoUrls(photos).then((signed) => { signed.forEach((x) => { const p = photos.find((y) => y.path === x.path); if (p) p.preview = x.url; }); drawPhotos(); });
+    const drawPhotos = () => {
+      root.querySelector("#phs").innerHTML = photos.map((p, n) => `
+        <div class="row" style="align-items:center;gap:8px">
+          <img src="${esc(p.preview ?? p.url)}" alt="" style="width:64px;height:64px;object-fit:cover;border-radius:8px;background:var(--surface-2)">
+          <input data-cap="${n}" value="${esc(p.caption ?? "")}" placeholder="Caption (optional)" style="flex:1">
+          <button type="button" class="btn icon sm" data-up="${n}" aria-label="Move up" ${n ? "" : "disabled"}>↑</button>
+          <button type="button" class="btn icon sm danger" data-rm="${n}" aria-label="Remove">×</button>
+        </div>`).join("") || '<p class="small muted" style="margin:0">No photos yet.</p>';
+      root.querySelectorAll("[data-cap]").forEach((el) => (el.oninput = () => (photos[Number(el.dataset.cap)].caption = el.value)));
+      root.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => { photos.splice(Number(b.dataset.rm), 1); drawPhotos(); }));
+      root.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => { const n = Number(b.dataset.up); [photos[n - 1], photos[n]] = [photos[n], photos[n - 1]]; drawPhotos(); }));
+    };
+    drawPhotos();
+    root.querySelector("#addph").onchange = (e) => {
+      [...e.target.files].forEach((file) => photos.push({ file, preview: URL.createObjectURL(file), caption: "" }));
+      e.target.value = ""; drawPhotos();
+    };
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target);
-      const row = { title: f.title, category: f.category || "General", min_role: f.min_role, body: f.body };
+      const btn = e.target.querySelector(".primary");
+      for (const p of photos.filter((x) => x.file)) {
+        btn.disabled = true; btn.textContent = "Uploading photos…";
+        const path = `${crypto.randomUUID()}.jpg`;
+        const up = await sb.storage.from("sops").upload(path, await shrinkImage(p.file, 1600), { contentType: "image/jpeg" });
+        if (up.error) { btn.disabled = false; btn.textContent = "Save"; return toast("Photo upload failed: " + up.error.message); }
+        p.path = path; delete p.file;
+      }
+      const row = { title: f.title, category: f.category || "General", min_role: f.min_role, body: f.body,
+        photos: photos.map((p) => ({ path: p.path, caption: (p.caption ?? "").trim() || null })) };
       const res = s.id ? await sb.from("sops").update(row).eq("id", s.id).select().single() : await sb.from("sops").insert(row).select().single();
       if (res.error) return toast(res.error.message);
       log(s.id ? "update_sop" : "create_sop", "sop", res.data.id, { title: f.title });
