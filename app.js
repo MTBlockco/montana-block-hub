@@ -252,7 +252,7 @@ function wireTopbar(root) {
 
 // ---------------------------------------------------------------- data loaders
 async function loadProfiles() {
-  const { data } = await sb.from("profiles").select("id, full_name, email, title, role, active, daily_ai_limit, can_edit_inventory").order("full_name");
+  const { data } = await sb.from("profiles").select("id, full_name, email, title, role, active, daily_ai_limit, can_edit_inventory, extra_clock").order("full_name");
   state.cache.profiles = data ?? [];
   return state.cache.profiles;
 }
@@ -284,6 +284,7 @@ async function renderHome(root) {
       ${MTNS}
     </section>
     <div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
+    ${state.profile.extra_clock ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
     <div class="stack section">
       ${(ann.data ?? []).map((a) => `
         <div class="card">
@@ -307,6 +308,7 @@ async function renderHome(root) {
     </div>`;
   wireTopbar(root);
   renderClock(root.querySelector("#clock"));
+  if (state.profile.extra_clock) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => editJob((jobs.data ?? []).find((j) => j.id === b.dataset.job))));
@@ -335,6 +337,34 @@ async function renderClock(el, preset) {
     if (r.error) { toast(r.error); return renderClock(el); }
     toast(r.note || (open ? "Clocked out. Have a good one!" : "Clocked in. Let's build something."));
     renderClock(el, { open: r.open });
+  };
+}
+
+// Second clock for hours outside someone's normal shift. App only, never sent to Square.
+let xclockTimer = null;
+async function renderExtraClock(el) {
+  const since = weekStart(0);
+  const { data } = await sb.from("extra_time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", weekStart(-1).toISOString()).order("clock_in", { ascending: false });
+  const open = (data ?? []).find((e) => !e.clock_out);
+  const week = (data ?? []).filter((e) => new Date(e.clock_in) >= since).reduce((a, e) => a + entryMs(e), 0);
+  clearInterval(xclockTimer);
+  el.classList.toggle("on", !!open);
+  el.innerHTML = `
+    <div>
+      <div class="state"><span class="dot"></span>Extra hours: ${open ? "on" : "off"}</div>
+      ${open ? `<div class="timer" id="xtmr">${hm(Date.now() - new Date(open.clock_in))}</div><div class="small muted">since ${timeOf(open.clock_in)}${open.note ? " · " + esc(open.note) : ""}</div>`
+             : `<div class="small muted">This week: ${hm(week)}</div>`}
+    </div>
+    <button class="btn punch ${open ? "out" : "in"}" id="xpunch">${open ? "Stop extra" : "Start extra"}</button>`;
+  if (open) xclockTimer = setInterval(() => { const t = document.getElementById("xtmr"); if (!t) return clearInterval(xclockTimer); t.textContent = hm(Date.now() - new Date(open.clock_in)); }, 30000);
+  el.querySelector("#xpunch").onclick = async (e) => {
+    let note = null;
+    if (open) { if (!confirm(`Stop extra hours? You've logged ${hm(Date.now() - new Date(open.clock_in))}.`)) return; }
+    else { note = prompt("What are the extra hours for? (optional)", ""); if (note === null) return; }
+    e.target.disabled = true;
+    const { error } = await sb.rpc("extra_clock_punch", { p_note: note });
+    if (error) toast(error.message); else toast(open ? "Extra hours stopped." : "Extra hours started.");
+    renderExtraClock(el);
   };
 }
 
@@ -936,6 +966,20 @@ async function renderMyHours(root) {
       <td>${new Date(e.clock_in).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</td>
       <td>${timeOf(e.clock_in)}</td><td>${e.clock_out ? timeOf(e.clock_out) : '<span class="badge ok">On now</span>'}</td><td>${hm(entryMs(e))}</td><td>${sqBadge(e)}</td></tr>`).join("")
       || '<tr><td colspan="5" class="muted">No punches in the last two weeks.</td></tr>'}</table></div>`;
+  if (!state.profile.extra_clock) return;
+  const { data: x } = await sb.from("extra_time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
+  const xc = (x ?? []).filter((e) => new Date(e.clock_in) >= thisWk), xp = (x ?? []).filter((e) => new Date(e.clock_in) < thisWk);
+  root.insertAdjacentHTML("beforeend", `<div class="card stack section">
+    <div class="row between"><h2 style="margin:0">Extra hours</h2><span class="badge">This week ${hm(tot(xc))}</span></div>
+    <p class="small muted" style="margin:0">Last week: ${hm(tot(xp))}. Tracked separately from your Square hours.</p>
+    ${extraTable(x, false)}</div>`);
+}
+
+function extraTable(list, withName) {
+  return `<table><tr>${withName ? "<th>Person</th>" : ""}<th>Day</th><th>In</th><th>Out</th><th>Hours</th><th>For</th></tr>${(list ?? []).map((e) => `<tr>
+    ${withName ? `<td>${esc(nameOf(e.user_id))}</td>` : ""}<td>${new Date(e.clock_in).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</td>
+    <td>${timeOf(e.clock_in)}</td><td>${e.clock_out ? timeOf(e.clock_out) : '<span class="badge ok">On now</span>'}</td><td>${hm(entryMs(e))}</td><td class="small">${esc(e.note ?? "")}</td></tr>`).join("")
+    || `<tr><td colspan="${withName ? 6 : 5}" class="muted">No extra hours logged.</td></tr>`}</table>`;
 }
 
 async function renderTimeclockAdmin(root) {
@@ -959,6 +1003,13 @@ async function renderTimeclockAdmin(root) {
       <table><tr><th>Person</th><th>Hours</th></tr>${Object.entries(byUser).sort((a, b) => b[1] - a[1]).map(([id, ms]) => `<tr><td>${esc(nameOf(id))}</td><td>${hm(ms)}</td></tr>`).join("") || '<tr><td colspan="2" class="muted">No punches yet this week.</td></tr>'}</table>
       ${issues.length ? `<p class="small error">${issues.length} punch${issues.length > 1 ? "es" : ""} didn't reach Square: ${issues.map((e) => esc(nameOf(e.user_id)) + " " + new Date(e.clock_in).toLocaleDateString([], { month: "short", day: "numeric" })).join(", ")}. Fix those in Square Team.</p>` : ""}
     </div>`;
+  const { data: x } = await sb.from("extra_time_entries").select("*").gte("clock_in", weekStart(-1).toISOString()).order("clock_in", { ascending: false });
+  if (!(x ?? []).length) return;
+  const sum = (list) => list.reduce((a, e) => a + entryMs(e), 0);
+  const thisWk = (x ?? []).filter((e) => new Date(e.clock_in) >= since), lastWk = (x ?? []).filter((e) => new Date(e.clock_in) < since);
+  root.insertAdjacentHTML("beforeend", `<div class="card section stack">
+    <div class="row between"><h2 style="margin:0">Extra hours (not in Square)</h2><span class="badge">This week ${hm(sum(thisWk))} · Last week ${hm(sum(lastWk))}</span></div>
+    ${extraTable(x, true)}</div>`);
 }
 
 async function renderSuppliers(root) {
@@ -1076,13 +1127,19 @@ async function renderTeam(root) {
           <div><label>Ask Claude questions per day</label><input name="daily_ai_limit" type="number" min="0" max="200" value="${p.daily_ai_limit}"></div>
         </div>
         <label class="row" style="color:var(--text)"><input type="checkbox" name="active" style="width:auto;min-height:0" ${p.active ? "checked" : ""}> Active (uncheck to block access)</label>
-        ${state.profile.role === "owner" ? `<label class="row" style="color:var(--text)"><input type="checkbox" name="can_edit_inventory" style="width:auto;min-height:0" ${p.can_edit_inventory ? "checked" : ""}> Can change inventory (updates Shopify)</label>` : ""}
+        ${state.profile.role === "owner" ? `<label class="row" style="color:var(--text)"><input type="checkbox" name="can_edit_inventory" style="width:auto;min-height:0" ${p.can_edit_inventory ? "checked" : ""}> Can change inventory (updates Shopify)</label>
+          <label class="row" style="color:var(--text)"><input type="checkbox" name="extra_clock" style="width:auto;min-height:0" ${p.extra_clock ? "checked" : ""}> Extra-hours clock (tracked in the app, not Square)</label>` : ""}
         <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" id="reset">Reset password</button><button type="button" class="btn" data-close>Cancel</button></div>
       </form>`, (r, close) => {
       r.querySelector("#f").onsubmit = async (e) => {
         e.preventDefault();
         const f = formData(e.target);
+        const extra = !!f.extra_clock; delete f.extra_clock;
         const ok = await adminCall({ action: "update", id: p.id, ...f, daily_ai_limit: Number(f.daily_ai_limit) });
+        if (ok && state.profile.role === "owner" && extra !== !!p.extra_clock) {
+          const { error } = await sb.from("profiles").update({ extra_clock: extra }).eq("id", p.id);
+          if (error) return toast("Saved, but the extra-hours setting didn't: " + error.message);
+        }
         if (ok) { toast("Saved"); close(); renderTeam(root); }
       };
       r.querySelector("#reset").onclick = async () => {
