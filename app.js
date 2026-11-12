@@ -599,6 +599,15 @@ function editItem(i = {}) {
 
 // ---------------------------------------------------------------- Supplies (shop consumables + vendors)
 let supCat = "All", supQ = "";
+// Short vendor names for tight spaces on a phone ("Elevated Industrial Solutions" -> "Elevated").
+const VENDOR_SHORT = { "Elevated Industrial Solutions": "Elevated", "Intermountain Wood Products": "IWP", "Montana Container Corporation": "MT Container" };
+function shortVendor(n) {
+  if (!n) return "";
+  if (VENDOR_SHORT[n]) return VENDOR_SHORT[n];
+  let s = n.replace(/\s*\(.*?\)\s*/g, " ").replace(/,?\s*\b(LLC|L\.L\.C\.|Inc\.?|Co\.|Corp\.?|Corporation|Company|Products|Solutions)\b\.?/gi, "").replace(/\s+/g, " ").trim();
+  if (s.length > 18) s = s.split(" ").slice(0, 2).join(" ");
+  return s || n;
+}
 const money = (n) => (n == null || n === "" ? "" : "$" + Number(n).toFixed(2));
 async function renderSupplies(root) {
   const [{ data: items }, { data: vendors }] = await Promise.all([
@@ -606,7 +615,7 @@ async function renderSupplies(root) {
     sb.from("suppliers").select("*").order("name"),
   ]);
   state.cache.suppliers = vendors ?? [];
-  const vName = (id) => (vendors ?? []).find((v) => v.id === id)?.name ?? "";
+  const vName = (id) => shortVendor((vendors ?? []).find((v) => v.id === id)?.name ?? "");
   const q = supQ.toLowerCase();
   const list = (items ?? []).filter((i) =>
     (supCat === "All" || (supCat === "Low" ? isLow(i) : supCat === "Vendors" ? false : i.category === supCat)) &&
@@ -635,10 +644,12 @@ async function renderSupplies(root) {
     body.querySelectorAll("[data-v]").forEach((b) => (b.onclick = () => canInv() ? editVendor(vendors.find((v) => v.id === b.dataset.v), () => renderSupplies(root)) : null));
   } else {
     const lowItems = (items ?? []).filter(isLow);
+    let reorderOpen = true; try { reorderOpen = localStorage.getItem("mb_reorder_open") !== "0"; } catch {}
     const reorderCard = supCat === "All" && !q && lowItems.length ? `
-      <div class="card" style="margin-bottom:6px"><div class="row between"><h2 style="margin:0">Needs reorder</h2><span class="badge warn">${lowItems.length}</span></div>
-        <table style="margin-top:6px"><tr><th>Item</th><th>On hand</th><th>Reorder at</th><th>Vendor</th></tr>${lowItems.map((i) =>
-          `<tr data-open="${i.id}" style="cursor:pointer"><td>${esc(i.name)}</td><td>${Number(i.quantity)} ${esc(i.unit)}</td><td>${i.reorder_point}</td><td class="small">${esc(vName(i.supplier_id))}</td></tr>`).join("")}</table></div>` : "";
+      <details class="card collapse" id="reorder" style="margin-bottom:6px" ${reorderOpen ? "open" : ""}>
+        <summary class="row between"><h2 style="margin:0">Needs reorder</h2><span class="row" style="gap:8px"><span class="badge warn">${lowItems.length}</span><span class="chev" aria-hidden="true">▾</span></span></summary>
+        <table style="margin-top:6px"><tr><th>Item</th><th>Have</th><th>At</th><th>Vendor</th></tr>${lowItems.map((i) =>
+          `<tr data-open="${i.id}" style="cursor:pointer"><td>${esc(i.name)}</td><td>${Number(i.quantity)} ${esc(i.unit)}</td><td>${i.reorder_point}</td><td class="small">${esc(vName(i.supplier_id))}</td></tr>`).join("")}</table></details>` : "";
     body.innerHTML = reorderCard + Object.entries(groups).map(([cat, its]) => `
       <h2 class="section">${esc(cat)}</h2>
       <div class="list">${its.map((i) => `
@@ -656,6 +667,7 @@ async function renderSupplies(root) {
             </div>
           </div>
         </div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No supplies tracked yet."}</div>`;
+    body.querySelector("#reorder")?.addEventListener("toggle", (e) => { try { localStorage.setItem("mb_reorder_open", e.target.open ? "1" : "0"); } catch {} });
     body.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => supplyDetail(items.find((i) => i.id === b.dataset.open), vendors ?? [], () => renderSupplies(root))));
     if (canInv()) body.querySelectorAll(".item.hold").forEach((el) => onHold(el, () => supplyActions(items.find((i) => i.id === el.dataset.id), vendors ?? [], () => renderSupplies(root))));
     body.querySelectorAll("[data-adj]").forEach((b) => (b.onclick = async (e) => {
@@ -901,17 +913,66 @@ async function viewSop(s) {
     ${can("admin") ? '<div class="row" style="margin-top:14px"><button class="btn" id="edit">Edit</button></div>' : ""}`,
   (root, close) => {
     root.querySelector("#edit")?.addEventListener("click", () => { close(); editSop(s); });
-    root.querySelectorAll("[data-ph]").forEach((f) => (f.onclick = () => photoViewer(s.photos[Number(f.dataset.ph)])));
+    root.querySelectorAll("[data-ph]").forEach((f) => (f.onclick = () => photoViewer(s.photos[Number(f.dataset.ph)], s.photos)));
   });
 }
 
-// Full-screen view so diagrams can be pinch-zoomed on a phone.
-function photoViewer(p) {
+// Full-screen viewer: pinch or double-tap to zoom, drag to pan, scroll wheel on a computer.
+function photoViewer(p, list = [p]) {
+  let idx = Math.max(0, list.indexOf(p));
   const d = document.createElement("div");
   d.className = "viewer";
-  d.innerHTML = `<img src="${esc(p.url)}" alt="${esc(p.caption ?? "")}">${p.caption ? `<div class="cap">${esc(p.caption)}</div>` : ""}<button class="btn sm">Close</button>`;
-  d.onclick = () => d.remove();
+  d.innerHTML = `
+    <div class="vbar"><span class="cap" id="vcap"></span><span class="row" style="gap:6px">
+      ${list.length > 1 ? '<button class="btn sm" id="vprev">‹</button><button class="btn sm" id="vnext">›</button>' : ""}
+      <button class="btn sm" id="vreset">Fit</button><button class="btn sm" id="vclose">Close</button></span></div>
+    <div class="vstage" id="vstage"><img id="vimg" alt="" draggable="false"></div>
+    <div class="vhint small">Pinch or double-tap to zoom · drag to move</div>`;
   document.body.appendChild(d);
+  const stage = d.querySelector("#vstage"), img = d.querySelector("#vimg");
+  let s = 1, x = 0, y = 0;
+  const apply = () => (img.style.transform = `translate(${x}px, ${y}px) scale(${s})`);
+  const reset = () => { s = 1; x = 0; y = 0; apply(); };
+  const show = () => { const cur = list[idx]; img.src = cur.url; d.querySelector("#vcap").textContent = cur.caption ?? ""; reset(); };
+  // Zoom toward a point so the spot under your fingers stays put.
+  const zoomAt = (ns, cx, cy) => {
+    ns = Math.min(8, Math.max(1, ns));
+    const r = stage.getBoundingClientRect(), px = cx - r.left - r.width / 2, py = cy - r.top - r.height / 2;
+    x = px - (px - x) * (ns / s); y = py - (py - y) * (ns / s); s = ns;
+    if (s === 1) { x = 0; y = 0; }
+    apply();
+  };
+  const pts = new Map(); let startDist = 0, startS = 1, lastTap = 0, last = null;
+  stage.addEventListener("pointerdown", (e) => {
+    stage.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; startDist = Math.hypot(a.x - b.x, a.y - b.y); startS = s; }
+    if (pts.size === 1) {
+      const now = Date.now();
+      if (now - lastTap < 300) { zoomAt(s > 1.5 ? 1 : 3, e.clientX, e.clientY); lastTap = 0; } else lastTap = now;
+      last = { x: e.clientX, y: e.clientY };
+    }
+  });
+  stage.addEventListener("pointermove", (e) => {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2) {
+      const [a, b] = [...pts.values()];
+      zoomAt(startS * Math.hypot(a.x - b.x, a.y - b.y) / startDist, (a.x + b.x) / 2, (a.y + b.y) / 2);
+    } else if (pts.size === 1 && last && s > 1) {
+      x += e.clientX - last.x; y += e.clientY - last.y; last = { x: e.clientX, y: e.clientY }; apply();
+    }
+  });
+  const up = (e) => { pts.delete(e.pointerId); if (pts.size === 1) last = { ...[...pts.values()][0] }; if (!pts.size) last = null; };
+  ["pointerup", "pointercancel"].forEach((ev) => stage.addEventListener(ev, up));
+  stage.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(s * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY); }, { passive: false });
+  const close = () => { d.remove(); document.removeEventListener("keydown", key); };
+  const key = (e) => { if (e.key === "Escape") close(); if (e.key === "ArrowRight" && list.length > 1) { idx = (idx + 1) % list.length; show(); } if (e.key === "ArrowLeft" && list.length > 1) { idx = (idx - 1 + list.length) % list.length; show(); } };
+  document.addEventListener("keydown", key);
+  d.querySelector("#vclose").onclick = close;
+  d.querySelector("#vreset").onclick = reset;
+  d.querySelector("#vprev")?.addEventListener("click", () => { idx = (idx - 1 + list.length) % list.length; show(); });
+  d.querySelector("#vnext")?.addEventListener("click", () => { idx = (idx + 1) % list.length; show(); });
+  show();
 }
 
 function editSop(s = {}) {
