@@ -2054,7 +2054,7 @@ async function renderMyHoursInner(root) {
       <div class="small muted">${usd(pay.rate)}/hr · ${Number(pay.hours)} hrs on the extra clock since ${fmtDate(String(pay.since).slice(0, 10))} = ${usd(pay.earned)}</div>
       ${(pay.lines ?? []).length ? `<details style="margin-top:6px"><summary class="small">How we got there</summary>
         <table style="margin-top:6px">${pay.lines.map((l) => `<tr><td class="small">${fmtDate(l.date)}</td><td class="small">${kindLabel[l.kind] ?? l.kind}${l.note ? ` <span class="muted">· ${esc(l.note)}</span>` : ""}</td><td class="small" style="text-align:right;white-space:nowrap">${Number(l.amount) < 0 ? "−" + usd(-l.amount) : usd(l.amount)}</td></tr>`).join("")}</table></details>` : ""}
-      <p class="small muted" style="margin:6px 0 0">Something look off? Use Request time card edit above.</p></div>` : "";
+      <p class="small muted" style="margin:6px 0 0">Something look off? Use Request time card edit on this page.</p></div>` : "";
   root.insertAdjacentHTML("beforeend", `<div class="card stack section">
     <div class="row between"><h2 style="margin:0">Extra hours</h2><span class="badge">This week ${hm(tot(xc))}</span></div>
     ${payCard}
