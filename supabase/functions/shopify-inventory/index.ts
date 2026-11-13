@@ -81,6 +81,34 @@ async function sync(service: ReturnType<typeof createClient>) {
   return { synced: rows.length, removed: stale.length };
 }
 
+// Unfulfilled orders, line by line, for the Jobs > SHOPIFY / WHOLESALE tabs. No prices are returned.
+async function openOrders() {
+  const out: Record<string, unknown>[] = [];
+  let after: string | null = null;
+  do {
+    const data = await gql(`query($after: String) {
+      orders(first: 100, after: $after, sortKey: CREATED_AT, query: "status:open AND (fulfillment_status:unfulfilled OR fulfillment_status:partial)") {
+        pageInfo { hasNextPage endCursor }
+        nodes { id name createdAt tags displayFulfillmentStatus note
+          customer { displayName } shippingAddress { company name } shippingLine { title }
+          lineItems(first: 100) { nodes { title variantTitle sku unfulfilledQuantity requiresShipping variant { id } } } } } }`, { after });
+    const o = data.orders;
+    for (const n of o.nodes) {
+      const lines = n.lineItems.nodes.filter((l: any) => l.unfulfilledQuantity > 0 && l.requiresShipping)
+        .map((l: any) => ({ title: l.title, variant: l.variantTitle === "Default Title" ? null : l.variantTitle, sku: l.sku || null, qty: l.unfulfilledQuantity, variant_id: l.variant?.id ?? null }));
+      if (!lines.length) continue;
+      const wholesale = (n.tags ?? []).some((t: string) => /wholesale/i.test(t)) || lines.some((l: any) => /^wholesale/i.test(l.title));
+      out.push({
+        id: n.id, name: n.name, created_at: n.createdAt, status: n.displayFulfillmentStatus,
+        customer: n.shippingAddress?.company || n.customer?.displayName || n.shippingAddress?.name || "",
+        pickup: /pickup/i.test(n.shippingLine?.title ?? ""), note: n.note ?? null, wholesale, lines,
+      });
+    }
+    after = o.pageInfo.hasNextPage ? o.pageInfo.endCursor : null;
+  } while (after);
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -102,6 +130,10 @@ Deno.serve(async (req) => {
     const { data: { user } } = await userClient.auth.getUser();
     if (!user) return json({ error: "Not signed in" }, 401);
     const { data: p } = await service.from("profiles").select("role, active, can_edit_inventory").eq("id", user.id).single();
+    // Open orders (read-only, no prices) are for leads and up.
+    if (body.action === "open_orders" && p?.active && ["lead", "admin", "owner"].includes(p.role)) {
+      try { return json({ ok: true, orders: await openOrders() }); } catch (e) { return json({ error: (e as Error).message }, 502); }
+    }
     if (!p || !p.active || !(p.role === "owner" || p.can_edit_inventory)) {
       return json({ error: "Only people Mitchell has given inventory access can change inventory." }, 403);
     }

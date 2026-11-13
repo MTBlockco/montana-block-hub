@@ -418,10 +418,11 @@ async function renderJobs(root) {
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
-  if (jobFilter === "Materials" && !can("lead")) jobFilter = "Active";
-  const tabs = can("lead") ? ["Active", "Complete", "Materials"] : ["Active", "Complete"];
+  if (["Materials", "Shopify", "Wholesale"].includes(jobFilter) && !can("lead")) jobFilter = "Active";
+  const tabs = can("lead") ? ["Active", "Complete", "Shopify", "Wholesale", "Materials"] : ["Active", "Complete"];
   const chips = `<div class="chips">${tabs.map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()}${counts[f] != null ? ` <span class="small">${counts[f]}</span>` : ""}</button>`).join("")}</div>`;
   if (jobFilter === "Materials") return renderMaterials(root, chips, jobs ?? []);
+  if (jobFilter === "Shopify" || jobFilter === "Wholesale") return renderOpenOrders(root, chips, jobFilter === "Wholesale");
   root.innerHTML = `
     ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
     ${chips}
@@ -432,6 +433,91 @@ async function renderJobs(root) {
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
+}
+
+// ---------------------------------------------------------------- Open Shopify orders vs inventory
+// SHOPIFY = website orders not shipped yet; WHOLESALE = wholesale orders not shipped yet.
+// Each tab adds up what's ordered, compares it to what's on the shelf, and shows what to build.
+const normName = (s) => String(s ?? "").toLowerCase().replace(/^wholesale\s*[-–]\s*/, "").replace(/[^a-z0-9]+/g, " ").trim();
+async function loadOpenOrders(force) {
+  const c = state.cache.openOrders;
+  if (!force && c && Date.now() - c.at < 120000) return c;
+  const [res, { data: inv }] = await Promise.all([
+    fnCall("shopify-inventory", { action: "open_orders" }),
+    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id").in("source", ["shopify", "wholesale"]),
+  ]);
+  const out = { at: Date.now(), error: res?.error ?? null, orders: res?.orders ?? [], inv: inv ?? [] };
+  if (!out.error) state.cache.openOrders = out;
+  return out;
+}
+function matchStock(line, inv, wholesale) {
+  const byVariant = line.variant_id && inv.find((i) => i.source === "shopify" && i.shopify_variant_id === line.variant_id);
+  const n = normName(line.title + (line.variant ? " " + line.variant : "")), t = normName(line.title);
+  const byName = (src) => inv.filter((i) => i.source === src).find((i) => normName(i.name) === n || normName(i.name) === t)
+    ?? inv.filter((i) => i.source === src).find((i) => t.length > 3 && (normName(i.name).includes(t) || t.includes(normName(i.name))));
+  if (wholesale) return byName("wholesale") ?? byVariant ?? byName("shopify") ?? null;
+  return byVariant ?? byName("shopify") ?? null;
+}
+async function renderOpenOrders(root, chips, wholesale, force) {
+  root.innerHTML = `${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}${chips}<div class="empty" style="margin-top:12px">Loading open orders from Shopify…</div>`;
+  wireTopbar(root);
+  const wire = () => {
+    root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
+    root.querySelector("#refresh")?.addEventListener("click", () => renderOpenOrders(root, chips, wholesale, true));
+  };
+  wire();
+  const { error, orders, inv } = await loadOpenOrders(force);
+  if (error) {
+    root.innerHTML = `${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}${chips}
+      <div class="card" style="margin-top:12px"><strong>Can't read Shopify orders yet.</strong>
+      <p class="small muted" style="margin:6px 0 0">${/access denied/i.test(error) ? "The hub's Shopify app needs permission to read orders. Mitchell is switching it on." : esc(error)}</p></div>`;
+    wireTopbar(root); return wire();
+  }
+  const list = orders.filter((o) => !!o.wholesale === wholesale);
+  // Add up what's ordered per product, then compare to stock.
+  const need = {};
+  list.forEach((o) => o.lines.forEach((l) => {
+    const item = matchStock(l, inv, wholesale);
+    const key = item?.id ?? "x:" + normName(l.title + " " + (l.variant ?? ""));
+    const name = item?.name ?? (l.variant ? `${l.title} – ${l.variant}` : l.title);
+    (need[key] ??= { name, ordered: 0, stock: item ? Number(item.quantity) : null, orders: new Set() });
+    need[key].ordered += Number(l.qty); need[key].orders.add(o.name);
+    l._stock = item ? Number(item.quantity) : null;
+  }));
+  const rows = Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered - Math.max(0, r.stock)) }))
+    .sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered);
+  const toBuild = rows.filter((r) => r.short > 0);
+  const age = (d) => Math.floor((Date.now() - new Date(d)) / 864e5);
+  root.innerHTML = `
+    ${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}
+    ${chips}
+    <div class="card" style="margin-top:12px">
+      <div class="row between"><h3 style="margin:0">🔨 Build list</h3><span class="small muted">${list.length} open order${list.length === 1 ? "" : "s"}</span></div>
+      <p class="small muted" style="margin:4px 0 8px">Everything ordered and not shipped yet, compared to what's in ${wholesale ? "wholesale" : "website"} inventory.</p>
+      ${rows.length ? `<table><tr><th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th></tr>${rows.map((r, i) => `<tr>
+        <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ")}</div></td>
+        <td>${r.ordered}</td><td>${r.stock == null ? '<span class="small muted">not tracked</span>' : r.stock}</td>
+        <td>${r.short == null ? "?" : r.short > 0 ? `<span class="badge bad">${r.short}</span>${can("lead") ? ` <button class="linkbtn" data-build="${i}">+ Job</button>` : ""}` : '<span class="badge ok">✓</span>'}</td></tr>`).join("")}</table>`
+        : `<p class="small muted" style="margin:0">No open ${wholesale ? "wholesale" : "website"} orders. 🎉</p>`}
+      ${toBuild.length ? `<p class="small" style="margin:8px 0 0"><strong>${toBuild.reduce((a, r) => a + r.short, 0)} pieces to build</strong> across ${toBuild.length} product${toBuild.length === 1 ? "" : "s"}.</p>` : ""}
+    </div>
+    <h3 class="section" style="margin-bottom:4px">Open ${wholesale ? "wholesale" : "website"} orders</h3>
+    <div class="list">${list.map((o) => {
+      const d = age(o.created_at);
+      return `<div class="item" style="cursor:default">
+        <div class="row between"><span class="title">${esc(o.name)} · ${esc(o.customer || "")}</span>
+          <span class="badge ${d >= 10 ? "bad" : d >= 5 ? "warn" : ""}">${d === 0 ? "Today" : d + "d old"}</span></div>
+        <div class="small muted">${fmtDate(o.created_at.slice(0, 10))}${o.status === "PARTIALLY_FULFILLED" ? " · partly shipped" : ""}${o.pickup ? " · Local pickup" : ""}</div>
+        ${o.lines.map((l) => `<div class="row between small" style="margin-top:4px"><span>${l.qty} × ${esc(l.title)}${l.variant ? ` <span class="muted">(${esc(l.variant)})</span>` : ""}</span>
+          <span class="muted">${l._stock == null ? "" : l._stock >= l.qty ? "✓ on shelf" : `${Math.max(0, l._stock)} on shelf`}</span></div>`).join("")}
+        ${o.note ? `<div class="small muted" style="margin-top:4px;white-space:pre-wrap">📝 ${esc(o.note)}</div>` : ""}
+      </div>`;
+    }).join("") || '<div class="empty">Nothing waiting to ship.</div>'}</div>`;
+  wireTopbar(root); wire();
+  root.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => {
+    const r = rows[Number(b.dataset.build)];
+    editJob({ title: `${wholesale ? "Wholesale" : "Web"} – ${r.name}`, product: r.name, quantity: r.short, customer: wholesale ? [...r.orders].join(", ") : "Website orders", channel: wholesale ? "Retail" : "Web" }, () => { jobFilter = "Active"; renderJobs(root); });
+  }));
 }
 
 // ---------------------------------------------------------------- Materials (lumber to order per job)
