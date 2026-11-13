@@ -2045,8 +2045,19 @@ async function renderMyHoursInner(root) {
   if (!state.profile.extra_clock) return;
   const { data: x } = await sb.from("extra_time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
   const xc = (x ?? []).filter((e) => new Date(e.clock_in) >= thisWk), xp = (x ?? []).filter((e) => new Date(e.clock_in) < thisWk);
+  // Your own balance for extra hours (only you and admins can see it).
+  const { data: pay } = await sb.rpc("my_extra_pay");
+  const kindLabel = { balance: "Carried over", payment: "Paid to you", adjustment: "Time card / adjustment" };
+  const payCard = pay ? `<div class="card" style="padding:12px;margin:0">
+      <div class="row between"><strong>${Number(pay.owed) > 0 ? "We owe you" : Number(pay.owed) < 0 ? "Paid ahead" : "All paid up"}</strong>
+        <span style="font-family:var(--display);font-size:1.6rem">${usd(Math.abs(Number(pay.owed)))}</span></div>
+      <div class="small muted">${usd(pay.rate)}/hr · ${Number(pay.hours)} hrs on the extra clock since ${fmtDate(String(pay.since).slice(0, 10))} = ${usd(pay.earned)}</div>
+      ${(pay.lines ?? []).length ? `<details style="margin-top:6px"><summary class="small">How we got there</summary>
+        <table style="margin-top:6px">${pay.lines.map((l) => `<tr><td class="small">${fmtDate(l.date)}</td><td class="small">${kindLabel[l.kind] ?? l.kind}${l.note ? ` <span class="muted">· ${esc(l.note)}</span>` : ""}</td><td class="small" style="text-align:right;white-space:nowrap">${Number(l.amount) < 0 ? "−" + usd(-l.amount) : usd(l.amount)}</td></tr>`).join("")}</table></details>` : ""}
+      <p class="small muted" style="margin:6px 0 0">Something look off? Use Request time card edit above.</p></div>` : "";
   root.insertAdjacentHTML("beforeend", `<div class="card stack section">
     <div class="row between"><h2 style="margin:0">Extra hours</h2><span class="badge">This week ${hm(tot(xc))}</span></div>
+    ${payCard}
     <p class="small muted" style="margin:0">Last week: ${hm(tot(xp))}. Tracked separately from your Square hours.</p>
     ${extraTable(x, false)}</div>`);
 }
