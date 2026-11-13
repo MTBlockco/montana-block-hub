@@ -474,9 +474,10 @@ async function renderMyTimer(el, after) {
     <div><div class="state"><span class="dot"></span>Timing: ${esc(data.job_steps?.name ?? "step")}</div>
       <div class="timer" id="jt">${hm(Date.now() - new Date(data.started_at))}</div>
       <div class="small muted">${esc(data.jobs?.title ?? "")} · since ${timeOf(data.started_at)}</div></div>
-    <button class="btn punch out" id="jstop">Stop</button></div>`;
+    <div class="stack" style="gap:6px;align-items:stretch"><button class="btn punch out" id="jstop">Stop</button><button class="btn sm" id="jcancel">Cancel timer</button></div></div>`;
   myTimerTick = setInterval(() => { const t = document.getElementById("jt"); if (!t) return clearInterval(myTimerTick); t.textContent = hm(Date.now() - new Date(data.started_at)); }, 30000);
   el.querySelector("#jstop").onclick = () => stopTimer(data, after);
+  el.querySelector("#jcancel").onclick = () => cancelTimer(data, after);
 }
 
 function stopTimer(t, after) {
@@ -486,8 +487,9 @@ function stopTimer(t, after) {
       <p class="small muted" style="margin:0">${esc(t.job_steps?.name ?? "")} · ${esc(t.jobs?.title ?? "")} · ${hm(Date.now() - new Date(t.started_at))}</p>
       <div><label>How many pieces did you finish on this step?</label><input name="pieces" type="number" min="0" step="1" inputmode="numeric" required autofocus></div>
       <div><label>Note (optional)</label><input name="note" placeholder="Interrupted, machine down, extra defects…"></div>
-      <div class="row"><button class="btn primary">Save time</button><button type="button" class="btn" data-close>Keep timing</button></div>
+      <div class="row wrap"><button class="btn primary">Save time</button><button type="button" class="btn" data-close>Keep timing</button><button type="button" class="btn danger" id="cancelt">Cancel timer</button></div>
     </form>`, (root, close) => {
+    root.querySelector("#cancelt").onclick = () => { close(); cancelTimer(t, after); };
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target);
@@ -497,6 +499,15 @@ function stopTimer(t, after) {
       close(); after?.();
     };
   });
+}
+
+// Started by accident? Throw it away: no time logged, no pieces counted.
+async function cancelTimer(t, after) {
+  const mins = Math.round((Date.now() - new Date(t.started_at)) / 60000);
+  if (!confirm(`Cancel this timer${t.job_steps?.name ? ` on ${t.job_steps.name}` : ""}? The ${mins} min won't be saved.`)) return;
+  const { error } = await sb.rpc("job_timer_cancel");
+  if (error) return toast(error.message);
+  toast("Timer canceled. Nothing was logged."); after?.();
 }
 
 async function viewJob(j, done) {
@@ -535,7 +546,7 @@ async function viewJob(j, done) {
         <div class="row between" style="gap:6px;flex-wrap:wrap">
           <span class="small muted">This job: ${fmtMin(stepMin(st.id))}${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} per 10 pcs` : ""}</span>
           <span class="row" style="gap:6px">
-            ${j.status !== "Complete" ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
+            ${j.status !== "Complete" ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button><button class="btn sm" data-cancelt>Cancel</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
             <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
             ${can("lead") && j.status !== "Complete" ? `<button class="btn icon sm" data-fix="${st.id}" aria-label="Adjust count">✎</button>` : ""}
           </span></div>
@@ -575,6 +586,9 @@ async function viewJob(j, done) {
       if (!confirm("Delete this note?")) return;
       await sb.from("job_notes").delete().eq("id", b.dataset.delnote); close(); viewJob(j, done);
     }));
+    root.querySelector("[data-cancelt]")?.addEventListener("click", () => {
+      close(); cancelTimer({ ...mine, job_steps: { name: (steps ?? []).find((s) => s.id === mine.step_id)?.name } }, done);
+    });
     root.querySelectorAll("[data-fix]").forEach((b) => (b.onclick = async () => {
       const st = steps.find((s) => s.id === b.dataset.fix);
       const v = prompt(`Pieces done on ${st.name} (out of ${j.quantity}):`, st.done_qty);
