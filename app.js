@@ -411,6 +411,8 @@ async function renderJobs(root) {
     loadProfiles(),
   ]);
   state.cache.jobs = jobs ?? [];
+  state.cache.jobMoney = {};
+  if (seesMoney()) ((await sb.from("job_financials").select("*")).data ?? []).forEach((f) => (state.cache.jobMoney[f.job_id] = f));
   const byJob = {};
   (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
@@ -443,7 +445,7 @@ function jobCard(j, steps) {
   return `<div class="item" data-job="${j.id}">
     <div class="row between"><span class="title">${esc(j.title)}</span>
       ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
-    <div class="small muted">${[j.quantity + " pc", j.product, j.customer, j.assigned_to ? nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}</div>
+    <div class="small muted">${[j.quantity + " pc", j.product, j.customer, j.assigned_to ? nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
     ${j.status !== "Complete" && steps.length ? `<div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div>
       <div class="small muted" style="margin-top:2px">${pct}%${cur ? ` · Now: ${esc(cur.name)} (${cur.done_qty}/${j.quantity})` : " · All steps done"}</div>` : ""}
   </div>`;
@@ -461,6 +463,19 @@ function jobRows(list) {
   }).join("")}</div>`;
 }
 
+// Money is admin-only (Mitchell and Brittany). These tables are blocked for everyone else by the database.
+const seesMoney = () => can("admin");
+async function loadItemPrices(ids) {
+  if (!seesMoney() || !ids?.length) return {};
+  const { data } = await sb.from("item_prices").select("*").in("item_id", ids);
+  return Object.fromEntries((data ?? []).map((p) => [p.item_id, p]));
+}
+async function saveItemPrice(itemId, patch) {
+  if (!seesMoney()) return;
+  const { error } = await sb.from("item_prices").upsert({ item_id: itemId, ...patch, updated_at: new Date().toISOString() });
+  if (error) toast("Price didn't save: " + error.message);
+}
+const usd = (n) => (n == null ? "" : "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const fmtMin = (m) => { m = Math.round(m); return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`; };
 
 // Banner for whoever has a process timer running (Jobs tab and Home).
@@ -521,6 +536,7 @@ async function viewJob(j, done) {
       ${n.user_id === state.profile.id || can("admin") ? `<button class="linkbtn" data-delnote="${n.id}" aria-label="Delete note">×</button>` : ""}</div><div style="white-space:pre-wrap">${esc(n.body)}</div></div>`).join("");
   const noteForm = (stepId) => `<form class="row" data-noteform="${stepId ?? ""}" style="gap:6px;margin-top:6px"><input name="body" placeholder="Add a note…" autocomplete="off" style="flex:1"><button class="btn sm">Post</button></form>`;
   const products = [j.product || j.title];
+  const money = seesMoney() ? (await sb.from("job_financials").select("*").eq("job_id", j.id).maybeSingle()).data : null;
   const { data: stats } = await sb.from("process_stats").select("*").in("product", products);
   const statFor = (name) => (stats ?? []).find((x) => x.step === name);
   const mine = (timers ?? []).find((t) => t.user_id === state.profile.id && !t.ended_at);
@@ -534,6 +550,9 @@ async function viewJob(j, done) {
     <h2 style="margin:10px 0 2px">${esc(j.title)}</h2>
     <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", j.assigned_to ? "Lead: " + nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}</p>
     ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
+    ${money ? `<div class="card" style="margin:8px 0;padding:10px"><div class="small muted">💲 Pricing (only you and Brittany see this)</div>
+      <div><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
+      ${money.money_notes ? `<details><summary class="small">Full PO details</summary><div class="small" style="white-space:pre-wrap">${esc(money.money_notes)}</div></details>` : ""}</div>` : ""}
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
     <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
@@ -613,6 +632,7 @@ async function viewJob(j, done) {
 async function editJob(j = {}, done, steps = null) {
   const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending");
   const { data: past } = await sb.from("jobs").select("product").not("product", "is", null).limit(200);
+  const fin = seesMoney() && j.id ? (await sb.from("job_financials").select("*").eq("job_id", j.id).maybeSingle()).data ?? {} : {};
   const productOpts = [...new Set([...(past ?? []).map((p) => p.product), ...((state.cache.sopTitles) ?? [])])].filter(Boolean).sort();
   sheet(`
     <form class="stack" id="f">
@@ -629,7 +649,11 @@ async function editJob(j = {}, done, steps = null) {
       </div>
       ${j.id ? "" : `<div><label>Steps (one per line, in order)</label><textarea name="steps" style="min-height:170px">${DEFAULT_STEPS.join("\n")}</textarea>
         <p class="small muted" style="margin:4px 0 0">Use the same step names every time so the timing averages line up.</p></div>`}
-      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(j.notes)}</textarea></div>
+      <div><label>Notes (everyone sees these, no prices)</label><textarea name="notes" style="min-height:70px">${esc(j.notes)}</textarea></div>
+      ${seesMoney() ? `<div class="card stack" style="padding:10px"><div class="small muted">💲 Pricing (only you and Brittany see this)</div>
+        <div class="grid2"><div><label>Price each</label><input name="unit_price" type="number" step="0.01" value="${esc(fin.unit_price)}"></div>
+          <div><label>Job total</label><input name="line_total" type="number" step="0.01" value="${esc(fin.line_total)}" placeholder="auto = price x pieces"></div></div>
+        <div><label>PO / pricing notes</label><textarea name="money_notes" style="min-height:60px">${esc(fin.money_notes)}</textarea></div></div>` : ""}
       <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
         ${j.id && can("admin") ? '<button type="button" class="btn danger" id="del">Delete</button>' : ""}</div>
     </form>`, (root, close) => {
@@ -641,6 +665,12 @@ async function editJob(j = {}, done, steps = null) {
       if (!j.id) row.status = "Active";
       const res = j.id ? await sb.from("jobs").update(row).eq("id", j.id).select().single() : await sb.from("jobs").insert(row).select().single();
       if (res.error) return toast(res.error.message);
+      if (seesMoney() && (f.unit_price !== "" || f.line_total !== "" || f.money_notes)) {
+        const up = f.unit_price === "" ? null : Number(f.unit_price);
+        const tot = f.line_total !== "" ? Number(f.line_total) : up != null ? +(up * row.quantity).toFixed(2) : null;
+        const r3 = await sb.from("job_financials").upsert({ job_id: res.data.id, unit_price: up, line_total: tot, money_notes: f.money_notes || null, updated_at: new Date().toISOString() });
+        if (r3.error) toast("Job saved, pricing didn't: " + r3.error.message);
+      }
       if (!j.id) {
         const names = String(f.steps ?? "").split("\n").map((x) => x.trim()).filter(Boolean);
         if (names.length) {
@@ -740,6 +770,8 @@ function wireProductTabs(root) {
 let whQ = "";
 async function renderWholesale(root) {
   const { data: items } = await sb.from("inventory_items").select("*").eq("source", "wholesale").order("category").order("name");
+  const prices = await loadItemPrices((items ?? []).map((i) => i.id));
+  (items ?? []).forEach((i) => (i.wholesale_price = prices[i.id]?.wholesale_price ?? null));
   const q = whQ.toLowerCase();
   const list = (items ?? []).filter((i) => !q || [i.name, i.category, i.species, i.location, i.notes].join(" ").toLowerCase().includes(q));
   const groups = {}; list.forEach((i) => (groups[i.category || "Other"] ??= []).push(i));
@@ -749,13 +781,13 @@ async function renderWholesale(root) {
     ${topbar("Products", canInv() ? '<button class="btn sm primary" id="new">+ Item</button>' : "")}
     ${productTabs()}
     <input id="q" placeholder="Search patterns, species, bins…" value="${esc(whQ)}" style="margin-bottom:6px">
-    <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && canInv() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
+    <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && seesMoney() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
     ${Object.entries(groups).map(([cat, its]) => `<h2 class="section">${esc(cat)}</h2>
       <div class="list">${its.map((i) => `
         <div class="item hold" data-id="${i.id}"><div class="row between">
           ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
           <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
-            <div class="small muted">${[i.species, i.location, i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
+            <div class="small muted">${[i.species, i.location, seesMoney() && i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
           <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
             <span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)}</span>
             ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}</div>
@@ -807,7 +839,7 @@ function editWholesale(i, all, done) {
         <div><label>Category</label><input name="category" value="${esc(i.category)}" list="whcats" required><datalist id="whcats">${cats.map((c) => `<option>${esc(c)}</option>`).join("")}</datalist></div>
         <div><label>Species / pattern</label><input name="species" value="${esc(i.species)}" placeholder="Walnut & maple, random"></div>
         <div><label>On hand</label><input name="quantity" type="number" min="0" step="1" value="${esc(i.quantity ?? 0)}" required></div>
-        <div><label>Wholesale price (each)</label><input name="wholesale_price" type="number" step="0.01" value="${esc(i.wholesale_price)}"></div>
+        ${seesMoney() ? `<div><label>Wholesale price (each) 💲</label><input name="wholesale_price" type="number" step="0.01" value="${esc(i.wholesale_price)}"></div>` : ""}
         <div><label>Where it's kept</label><input name="location" value="${esc(i.location)}" placeholder="Show bins, rack C"></div>
         <div><label>Low at</label><input name="reorder_point" type="number" step="1" value="${esc(i.reorder_point)}"></div>
       </div>
@@ -819,7 +851,7 @@ function editWholesale(i, all, done) {
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target), num = (x) => (x === "" ? null : Number(x));
-      const row = { name: f.name, category: f.category, species: f.species || null, quantity: Number(f.quantity), unit: "ea", wholesale_price: num(f.wholesale_price),
+      const row = { name: f.name, category: f.category, species: f.species || null, quantity: Number(f.quantity), unit: "ea",
         location: f.location || null, reorder_point: num(f.reorder_point), notes: f.notes || null, source: "wholesale" };
       if (photoFile) {
         const path = `wholesale/${crypto.randomUUID()}.jpg`;
@@ -829,6 +861,7 @@ function editWholesale(i, all, done) {
       }
       const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
       if (res.error) return toast(res.error.message);
+      if (seesMoney() && "wholesale_price" in f) await saveItemPrice(res.data.id, { wholesale_price: num(f.wholesale_price) });
       log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: row.name, quantity: row.quantity, wholesale: true });
       close(); done();
     };
@@ -917,6 +950,8 @@ async function renderSupplies(root) {
     sb.from("suppliers").select("*").order("name"),
   ]);
   state.cache.suppliers = vendors ?? [];
+  const prices = await loadItemPrices((items ?? []).map((i) => i.id));
+  (items ?? []).forEach((i) => { i.unit_cost = prices[i.id]?.unit_cost ?? null; i.price_notes = prices[i.id]?.price_notes ?? null; });
   const vName = (id) => shortVendor((vendors ?? []).find((v) => v.id === id)?.name ?? "");
   const q = supQ.toLowerCase();
   const list = (items ?? []).filter((i) =>
@@ -1065,7 +1100,8 @@ function supplyDetail(i, vendors, done) {
       ${i.location ? `<tr><th>Where</th><td>${esc(i.location)}</td></tr>` : ""}
       ${v ? `<tr><th>Vendor</th><td><strong>${esc(v.name)}</strong>${i.vendor_sku ? ` · #${esc(i.vendor_sku)}` : ""}<br><span class="small muted">${[v.order_method, v.phone, v.email].filter(Boolean).map(esc).join(" · ")}</span>${v.website ? `<br><a href="${esc(v.website.startsWith("http") ? v.website : "https://" + v.website)}" target="_blank" rel="noopener">${esc(v.website)}</a>` : ""}</td></tr>` : ""}
       ${i.pack_size ? `<tr><th>Comes in</th><td>${esc(i.pack_size)}</td></tr>` : ""}
-      ${i.unit_cost != null && canInv() ? `<tr><th>Last price</th><td>${money(i.unit_cost)} / ${esc(i.unit)}</td></tr>` : ""}
+      ${seesMoney() && i.unit_cost != null ? `<tr><th>Last price 💲</th><td>${money(i.unit_cost)} / ${esc(i.unit)}</td></tr>` : ""}
+      ${seesMoney() && i.price_notes ? `<tr><th>Price history 💲</th><td class="small">${esc(i.price_notes)}</td></tr>` : ""}
       ${i.last_ordered ? `<tr><th>Last ordered</th><td>${fmtDate(i.last_ordered)}</td></tr>` : ""}
       ${i.notes ? `<tr><th>Notes</th><td>${esc(i.notes)}</td></tr>` : ""}
     </table>
@@ -1095,7 +1131,7 @@ function editSupply(i, vendors, done) {
         <div><label>Vendor</label><select name="supplier_id"><option value="">—</option>${vendors.map((v) => `<option value="${v.id}" ${i.supplier_id === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("")}<option value="__new">+ New vendor…</option></select></div>
         <div><label>Vendor item #</label><input name="vendor_sku" value="${esc(i.vendor_sku)}"></div>
         <div><label>Comes in</label><input name="pack_size" value="${esc(i.pack_size)}" placeholder="box of 50, 5 gal pail"></div>
-        <div><label>Last price per unit</label><input name="unit_cost" type="number" step="0.01" value="${esc(i.unit_cost)}"></div>
+        ${seesMoney() ? `<div><label>Last price per unit 💲</label><input name="unit_cost" type="number" step="0.01" value="${esc(i.unit_cost)}"></div>` : ""}
         <div><label>Last ordered</label><input name="last_ordered" type="date" value="${esc(i.last_ordered)}"></div>
       </div>
       <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(i.notes)}</textarea></div>
@@ -1118,7 +1154,7 @@ function editSupply(i, vendors, done) {
       const num = (x) => (x === "" ? null : Number(x));
       const row = { name: f.name, category: f.category, location: f.location || null, quantity: Number(f.quantity), unit: f.unit || "ea",
         reorder_point: num(f.reorder_point), reorder_qty: num(f.reorder_qty), supplier_id: f.supplier_id || null, vendor_sku: f.vendor_sku || null,
-        pack_size: f.pack_size || null, unit_cost: num(f.unit_cost), last_ordered: f.last_ordered || null, notes: f.notes || null, source: "hub" };
+        pack_size: f.pack_size || null, last_ordered: f.last_ordered || null, notes: f.notes || null, source: "hub" };
       if (photoFile) {
         const btn = e.target.querySelector(".primary"); btn.disabled = true; btn.textContent = "Uploading photo…";
         const small = await shrinkImage(photoFile, 1200);
@@ -1129,6 +1165,7 @@ function editSupply(i, vendors, done) {
       }
       const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
       if (res.error) return toast(res.error.message);
+      if (seesMoney() && "unit_cost" in f) await saveItemPrice(res.data.id, { unit_cost: num(f.unit_cost) });
       log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: row.name, quantity: row.quantity });
       close(); done();
     };
@@ -1141,7 +1178,8 @@ function editSupply(i, vendors, done) {
   });
 }
 
-function editVendor(v = {}, done) {
+async function editVendor(v = {}, done) {
+  const vp = seesMoney() && v.id ? (await sb.from("supplier_prices").select("price_notes").eq("supplier_id", v.id).maybeSingle()).data : null;
   sheet(`
     <form class="stack" id="f"><h2>${v.id ? "Edit vendor" : "New vendor"}</h2>
       <div><label>Vendor name</label><input name="name" value="${esc(v.name)}" required></div>
@@ -1154,16 +1192,22 @@ function editVendor(v = {}, done) {
         <div><label>Our account #</label><input name="account_number" value="${esc(v.account_number)}"></div>
         <div><label>Lead time (days)</label><input name="lead_time_days" type="number" value="${esc(v.lead_time_days)}"></div>
       </div>
-      <div><label>Notes</label><textarea name="notes" style="min-height:70px">${esc(v.notes)}</textarea></div>
+      <div><label>Notes (everyone sees these, no prices)</label><textarea name="notes" style="min-height:70px">${esc(v.notes)}</textarea></div>
+      ${seesMoney() ? `<div><label>Pricing & quotes 💲 (only you and Brittany)</label><textarea name="price_notes" style="min-height:90px">${esc(vp?.price_notes)}</textarea></div>` : ""}
       <div class="row"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
     </form>`, (root, close) => {
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target);
+      const priceNotes = f.price_notes; delete f.price_notes;
       const row = { ...f, lead_time_days: f.lead_time_days ? Number(f.lead_time_days) : null };
       Object.keys(row).forEach((k) => row[k] === "" && (row[k] = null));
       const res = v.id ? await sb.from("suppliers").update(row).eq("id", v.id).select().single() : await sb.from("suppliers").insert(row).select().single();
       if (res.error) return toast(res.error.message);
+      if (seesMoney() && priceNotes !== undefined) {
+        const r2 = await sb.from("supplier_prices").upsert({ supplier_id: res.data.id, price_notes: priceNotes || null, updated_at: new Date().toISOString() });
+        if (r2.error) toast("Vendor saved, pricing notes didn't: " + r2.error.message);
+      }
       close(); done(res.data);
     };
   });
