@@ -165,6 +165,10 @@ h3 { font-size: 1.02rem; }
 .btn.punch { min-height: 56px; min-width: 150px; font-family: var(--display); text-transform: uppercase; letter-spacing: .08em; font-size: 1.05rem; border-radius: 12px; }
 .btn.punch.in { background: var(--ok); border-color: var(--ok); color: #fff; }
 .btn.punch.out { background: var(--bad); border-color: var(--bad); color: #fff; }
+.clock.onbreak .dot { background: var(--warn, #c88a00); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn, #c88a00) 25%, transparent); }
+.clock.onbreak .timer { font-size: 1.6rem; }
+.clock-actions { display: flex; flex-direction: column; align-items: stretch; }
+.clock-actions .row .btn { flex: 1; }
 
 input, select, textarea {
   width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 10px;

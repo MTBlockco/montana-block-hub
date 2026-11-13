@@ -28,6 +28,14 @@ const denver = (d: Date) => {
   return `${g("year")}-${g("month")}-${g("day")}T${g("hour") === "24" ? "00" : g("hour")}:${g("minute")}:00${off}`;
 };
 
+// Break types live in Square (Labor > Breaks). Lunch = "Lunch" (30 min, unpaid); quick = "Quick Break" (5 min, paid).
+const BREAKS = { lunch: { name: "Lunch", minutes: 30, paid: false }, quick: { name: "Quick Break", minutes: 5, paid: true } } as const;
+type Kind = keyof typeof BREAKS;
+async function breakType(kind: Kind) {
+  const list = (await square(`/labor/break-types?location_id=${LOCATION}`)).break_types ?? [];
+  return list.find((b: { break_name: string }) => b.break_name.toLowerCase() === BREAKS[kind].name.toLowerCase()) ?? null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -39,10 +47,11 @@ Deno.serve(async (req) => {
   const { data: me } = await service.from("profiles").select("square_team_member_id").eq("id", user.id).single();
   const tmId = me?.square_team_member_id as string | null;
   const { data: open } = await service.from("time_entries").select("*").eq("user_id", user.id).is("clock_out", null).maybeSingle();
+  const openBreak = async () => (await service.from("time_breaks").select("*").eq("user_id", user.id).is("end_at", null).maybeSingle()).data;
 
   // Status checks Square too, so a punch made on the Square register shows up in the app (and vice versa).
   if (body.action === "status") {
-    if (!tmId || !Deno.env.get("SQUARE_ACCESS_TOKEN")) return json({ open });
+    if (!tmId || !Deno.env.get("SQUARE_ACCESS_TOKEN")) return json({ open, break: open ? await openBreak() : null });
     try {
       const found = await square("/labor/timecards/search", "POST", {
         query: { filter: { team_member_ids: [tmId], status: "OPEN" } }, limit: 1,
@@ -68,10 +77,22 @@ Deno.serve(async (req) => {
         const { data: fresh } = await service.from("time_entries").select("*").eq("id", open.id).single();
         return json({ open: fresh });
       }
+      // Breaks taken or ended on the Square register show up here too.
+      if (open && tc && open.square_timecard_id === tc.id) {
+        const sqOpen = (tc.breaks ?? []).find((b: { end_at?: string }) => !b.end_at);
+        const mine = await openBreak();
+        if (sqOpen && !mine) {
+          const kind: Kind = /lunch/i.test(sqOpen.name ?? "") ? "lunch" : "quick";
+          await service.from("time_breaks").insert({ entry_id: open.id, user_id: user.id, kind, paid: !!sqOpen.is_paid, start_at: sqOpen.start_at, square_status: "synced" });
+        } else if (!sqOpen && mine) {
+          const done = (tc.breaks ?? []).filter((b: { end_at?: string }) => b.end_at).pop();
+          await service.from("time_breaks").update({ end_at: done?.end_at ?? new Date().toISOString() }).eq("id", mine.id);
+        }
+      }
     } catch (e) {
       console.error("status reconcile", (e as Error).message);
     }
-    return json({ open });
+    return json({ open, break: open ? await openBreak() : null });
   }
 
   // Admins: who is on the clock right now according to Square (covers register punches too).
@@ -146,6 +167,7 @@ Deno.serve(async (req) => {
     if (!open) return json({ error: "You're not clocked in." }, 409);
     const now = new Date();
     await service.from("time_entries").update({ clock_out: now.toISOString() }).eq("id", open.id);
+    await service.from("time_breaks").update({ end_at: now.toISOString() }).eq("user_id", user.id).is("end_at", null);
     let squareNote = "";
     try {
       if (!open.square_timecard_id) throw new Error(Deno.env.get("SQUARE_ACCESS_TOKEN") ? "No Square timecard for this shift." : "NO_TOKEN");
@@ -166,6 +188,59 @@ Deno.serve(async (req) => {
     }
     await service.from("activity_log").insert({ user_id: user.id, action: "clock_out" });
     return json({ ok: true, open: null, note: squareNote });
+  }
+
+  // Start a lunch (30, unpaid) or quick break (5, paid). Added to the open Square timecard.
+  if (body.action === "break_start") {
+    const kind = body.kind as Kind;
+    if (!BREAKS[kind]) return json({ error: "Pick lunch or a quick break." }, 400);
+    if (!open) return json({ error: "Clock in first." }, 409);
+    if (await openBreak()) return json({ error: "You're already on a break." }, 409);
+    const now = new Date();
+    const { data: br, error } = await service.from("time_breaks").insert({ entry_id: open.id, user_id: user.id, kind, paid: BREAKS[kind].paid, start_at: now.toISOString() }).select().single();
+    if (error) return json({ error: error.message }, 400);
+    let squareNote = "";
+    try {
+      if (!open.square_timecard_id) throw new Error(Deno.env.get("SQUARE_ACCESS_TOKEN") ? "No Square timecard for this shift." : "NO_TOKEN");
+      const bt = await breakType(kind);
+      if (!bt) throw new Error(`No "${BREAKS[kind].name}" break type in Square.`);
+      const cur = (await square(`/labor/timecards/${open.square_timecard_id}`)).timecard;
+      const breaks = [...(cur.breaks ?? []).map((b: Record<string, unknown>) => (b.end_at ? b : { ...b, end_at: denver(now) })),
+        { start_at: denver(now), break_type_id: bt.id, name: bt.break_name, expected_duration: bt.expected_duration, is_paid: bt.is_paid }];
+      const upd = (await square(`/labor/timecards/${cur.id}`, "PUT", { timecard: { ...cur, breaks } })).timecard;
+      await service.from("time_entries").update({ square_version: upd.version }).eq("id", open.id);
+      await service.from("time_breaks").update({ square_status: "synced", paid: !!bt.is_paid }).eq("id", br.id);
+    } catch (e) {
+      const msg = (e as Error).message;
+      await service.from("time_breaks").update({ square_status: msg === "NO_TOKEN" ? "pending" : "error", square_error: msg === "NO_TOKEN" ? null : msg }).eq("id", br.id);
+      squareNote = msg === "NO_TOKEN" ? "" : "Break saved in the hub, but Square didn't take it. The office has been flagged.";
+    }
+    await service.from("activity_log").insert({ user_id: user.id, action: "break_start", detail: { kind } });
+    return json({ ok: true, open, break: (await service.from("time_breaks").select("*").eq("id", br.id).single()).data, note: squareNote });
+  }
+
+  if (body.action === "break_end") {
+    const br = await openBreak();
+    if (!br) return json({ error: "You're not on a break." }, 409);
+    const now = new Date();
+    await service.from("time_breaks").update({ end_at: now.toISOString() }).eq("id", br.id);
+    let squareNote = "";
+    try {
+      if (!open?.square_timecard_id) throw new Error(Deno.env.get("SQUARE_ACCESS_TOKEN") ? "No Square timecard for this shift." : "NO_TOKEN");
+      const cur = (await square(`/labor/timecards/${open.square_timecard_id}`)).timecard;
+      if ((cur.breaks ?? []).some((b: { end_at?: string }) => !b.end_at)) {
+        const breaks = cur.breaks.map((b: Record<string, unknown>) => (b.end_at ? b : { ...b, end_at: denver(now) }));
+        const upd = (await square(`/labor/timecards/${cur.id}`, "PUT", { timecard: { ...cur, breaks } })).timecard;
+        await service.from("time_entries").update({ square_version: upd.version }).eq("id", open.id);
+      }
+      await service.from("time_breaks").update({ square_status: "synced", square_error: null }).eq("id", br.id);
+    } catch (e) {
+      const msg = (e as Error).message;
+      await service.from("time_breaks").update({ square_status: msg === "NO_TOKEN" ? "pending" : "error", square_error: msg === "NO_TOKEN" ? null : msg }).eq("id", br.id);
+      squareNote = msg === "NO_TOKEN" ? "" : "Saved in the hub, but Square didn't take it. The office has been flagged.";
+    }
+    await service.from("activity_log").insert({ user_id: user.id, action: "break_end", detail: { kind: br.kind } });
+    return json({ ok: true, open, break: null, note: squareNote });
   }
 
   return json({ error: "Unknown action" }, 400);

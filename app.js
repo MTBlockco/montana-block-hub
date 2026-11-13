@@ -318,26 +318,57 @@ let clockTimer = null;
 async function renderClock(el, preset) {
   const res = preset ?? await fnCall("timeclock", { action: "status" });
   if (res.error) { el.innerHTML = `<div class="small error">${esc(res.error)}</div>`; return; }
-  const open = res.open;
+  const open = res.open, brk = open ? res.break : null;
   if (res.note && !preset) toast(res.note);
   clearInterval(clockTimer);
-  el.classList.toggle("on", !!open);
+  el.classList.toggle("on", !!open && !brk);
+  el.classList.toggle("onbreak", !!brk);
+  const BRK = { lunch: { label: "Lunch", min: 30 }, quick: { label: "Quick break", min: 5 } };
+  // Break countdown: time left, then how far over.
+  const brkLeft = () => {
+    const ms = BRK[brk.kind].min * 60000 - (Date.now() - new Date(brk.start_at));
+    const m = Math.ceil(Math.abs(ms) / 60000);
+    return ms >= 0 ? `${m} min left` : `${m} min over`;
+  };
   el.innerHTML = `
     <div>
-      <div class="state"><span class="dot"></span>${open ? "On the clock" : "Off the clock"}</div>
-      ${open ? `<div class="timer" id="tmr">${hm(Date.now() - new Date(open.clock_in))}</div><div class="small muted">since ${timeOf(open.clock_in)}</div>`
-             : `<div class="small muted">${new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</div>`}
+      <div class="state"><span class="dot"></span>${brk ? `On ${BRK[brk.kind].label.toLowerCase()}` : open ? "On the clock" : "Off the clock"}</div>
+      ${brk ? `<div class="timer" id="tmr">${brkLeft()}</div><div class="small muted">${BRK[brk.kind].label} started ${timeOf(brk.start_at)}${brk.kind === "lunch" ? " · unpaid" : " · paid"}</div>`
+        : open ? `<div class="timer" id="tmr">${hm(Date.now() - new Date(open.clock_in))}</div><div class="small muted">since ${timeOf(open.clock_in)}</div>`
+        : `<div class="small muted">${new Date().toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</div>`}
     </div>
-    <button class="btn punch ${open ? "out" : "in"}" id="punch">${open ? "Clock out" : "Clock in"}</button>`;
-  if (open) clockTimer = setInterval(() => { const t = document.getElementById("tmr"); if (!t) return clearInterval(clockTimer); t.textContent = hm(Date.now() - new Date(open.clock_in)); }, 30000);
-  el.querySelector("#punch").onclick = async (e) => {
+    <div class="clock-actions">
+      ${brk ? '<button class="btn punch in" id="brkend">End break</button>'
+        : `<button class="btn punch ${open ? "out" : "in"}" id="punch">${open ? "Clock out" : "Clock in"}</button>
+           ${open ? '<div class="row" style="gap:6px;margin-top:6px"><button class="btn sm" data-brk="lunch">🍔 Lunch (30)</button><button class="btn sm" data-brk="quick">☕ Break (5)</button></div>' : ""}`}
+    </div>`;
+  if (open) clockTimer = setInterval(() => {
+    const t = document.getElementById("tmr"); if (!t) return clearInterval(clockTimer);
+    t.textContent = brk ? brkLeft() : hm(Date.now() - new Date(open.clock_in));
+  }, brk ? 15000 : 30000);
+  el.querySelector("#punch")?.addEventListener("click", async (e) => {
     if (open && !confirm(`Clock out now? You've been on ${hm(Date.now() - new Date(open.clock_in))}.`)) return;
     e.target.disabled = true; e.target.textContent = open ? "Clocking out…" : "Clocking in…";
     const r = await fnCall("timeclock", { action: open ? "clock_out" : "clock_in" });
     if (r.error) { toast(r.error); return renderClock(el); }
     toast(r.note || (open ? "Clocked out. Have a good one!" : "Clocked in. Let's build something."));
     renderClock(el, { open: r.open });
-  };
+  });
+  el.querySelectorAll("[data-brk]").forEach((b) => (b.onclick = async () => {
+    const kind = b.dataset.brk;
+    el.querySelectorAll("button").forEach((x) => (x.disabled = true));
+    const r = await fnCall("timeclock", { action: "break_start", kind });
+    if (r.error) { toast(r.error); return renderClock(el); }
+    toast(r.note || (kind === "lunch" ? "Enjoy lunch. 30 minutes, see you back." : "Quick break. Back in 5."));
+    renderClock(el, { open: r.open, break: r.break });
+  }));
+  el.querySelector("#brkend")?.addEventListener("click", async (e) => {
+    e.target.disabled = true; e.target.textContent = "Ending…";
+    const r = await fnCall("timeclock", { action: "break_end" });
+    if (r.error) { toast(r.error); return renderClock(el); }
+    toast(r.note || "Welcome back. You're on the clock.");
+    renderClock(el, { open: r.open, break: null });
+  });
 }
 
 // Second clock for hours outside someone's normal shift. App only, never sent to Square.
@@ -1871,7 +1902,17 @@ function weekStart(offsetWeeks = 0) {
   d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7) + offsetWeeks * 7);
   return d;
 }
-const entryMs = (e) => (e.clock_out ? new Date(e.clock_out) : new Date()) - new Date(e.clock_in);
+const entryMs = (e) => (e.clock_out ? new Date(e.clock_out) : new Date()) - new Date(e.clock_in) - (e._unpaid ?? 0);
+// Unpaid breaks (lunch) come off the shift, same as Square payroll.
+async function attachBreaks(entries) {
+  const ids = (entries ?? []).map((e) => e.id);
+  if (!ids.length) return entries;
+  const { data } = await sb.from("time_breaks").select("entry_id, paid, start_at, end_at").in("entry_id", ids);
+  const by = {};
+  (data ?? []).filter((b) => !b.paid).forEach((b) => (by[b.entry_id] = (by[b.entry_id] ?? 0) + ((b.end_at ? new Date(b.end_at) : new Date()) - new Date(b.start_at))));
+  entries.forEach((e) => (e._unpaid = by[e.id] ?? 0));
+  return entries;
+}
 const sqBadge = (e) => e.square_status === "synced" ? '<span class="badge ok">Square ✓</span>' : e.square_status === "error" ? `<span class="badge bad" title="${esc(e.square_error)}">Square ✗</span>` : '<span class="badge">Not in Square yet</span>';
 
 async function renderMyHours(root) {
@@ -1966,6 +2007,7 @@ async function renderAdminInfo(root) {
 async function renderMyHoursInner(root) {
   const since = weekStart(-1);
   const { data } = await sb.from("time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
+  await attachBreaks(data ?? []);
   const thisWk = weekStart(0);
   const tot = (list) => list.reduce((a, e) => a + entryMs(e), 0);
   const cur = (data ?? []).filter((e) => new Date(e.clock_in) >= thisWk), prev = (data ?? []).filter((e) => new Date(e.clock_in) < thisWk);
@@ -1999,6 +2041,7 @@ async function renderTimeclockAdmin(root) {
     fnCall("timeclock", { action: "team_status" }),
     sb.from("time_entries").select("*").gte("clock_in", since.toISOString()).order("clock_in", { ascending: false }),
   ]);
+  await attachBreaks(week ?? []);
   const byUser = {};
   (week ?? []).forEach((e) => { byUser[e.user_id] = (byUser[e.user_id] ?? 0) + entryMs(e); });
   // Square is the source of truth for who's on right now (covers register punches).
