@@ -585,12 +585,12 @@ async function viewJob(j, done) {
     <h2 style="margin:10px 0 2px">${esc(j.title)}</h2>
     <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", j.assigned_to ? "Lead: " + nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}</p>
     ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
-    ${money ? `<div class="card" style="margin:8px 0;padding:10px"><div class="small muted">💲 Pricing (only you and Brittany see this)</div>
-      <div><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
+    ${money ? `<details class="card" style="margin:8px 0;padding:10px"><summary class="small muted" style="cursor:pointer">💲 Pricing &amp; PO <span class="muted">(admin only)</span>${money.billed_at ? ' <span class="badge ok">Billed</span>' : j.shipped_qty != null ? ' <span class="badge warn">Ready to bill</span>' : ""}</summary>
+      <div style="margin-top:6px"><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
       ${j.shipped_qty != null && money.unit_price != null ? `<div style="margin-top:4px">Bill for sent: <strong>${usd(j.shipped_qty * money.unit_price)}</strong> <span class="small muted">(${j.shipped_qty} × ${usd(money.unit_price)})</span></div>` : ""}
       <div class="row between" style="margin-top:6px">${money.billed_at ? `<span class="badge ok">Billed ${fmtDate(money.billed_at)}${money.invoice_number ? " · #" + esc(money.invoice_number) : ""}</span>` : j.shipped_qty != null ? '<span class="badge warn">Ready to bill</span>' : '<span class="small muted">Not billed</span>'}
         <button class="btn sm" id="billed">${money.billed_at ? "Edit billing" : "Mark billed"}</button></div>
-      ${money.money_notes ? `<details><summary class="small">Full PO details</summary><div class="small" style="white-space:pre-wrap">${esc(money.money_notes)}</div></details>` : ""}</div>` : ""}
+      ${money.money_notes ? `<div class="small muted" style="margin-top:8px">PO details</div><div class="small" style="white-space:pre-wrap">${esc(money.money_notes)}</div>` : ""}</details>` : ""}
     <div class="card" style="margin:8px 0;padding:10px">
       <div class="row between"><span class="small muted">📦 FINAL AMOUNT SENT</span>${can("lead") ? `<button class="btn sm" id="ship">${j.shipped_qty != null ? "Change" : "Record amount sent"}</button>` : ""}</div>
       ${j.shipped_qty != null ? `<div><strong>${j.shipped_qty}</strong> of ${j.quantity} pieces${j.shipped_at ? ` · sent ${fmtDate(j.shipped_at)}` : ""}${j.shipped_by ? ` · by ${esc(nameOf(j.shipped_by))}` : ""}${j.shipped_qty !== j.quantity ? ` <span class="badge warn">${j.shipped_qty > j.quantity ? "+" : ""}${j.shipped_qty - j.quantity} vs order</span>` : ""}</div>` : '<div class="small muted">Not sent yet.</div>'}
