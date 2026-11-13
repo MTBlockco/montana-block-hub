@@ -1350,7 +1350,7 @@ async function renderSupplies(root) {
       <div class="list">${its.map((i) => `
         <div class="item hold" data-id="${i.id}">
           <div class="row between">
-            ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
+            ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : `<div data-open="${i.id}" title="No photo yet. Tap to add one" style="width:48px;height:48px;border-radius:8px;flex-shrink:0;display:grid;place-items:center;background:var(--surface-2);border:1px dashed var(--line);opacity:.7">📷</div>`}
             <div style="min-width:0;flex:1" data-open="${i.id}">
               <div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</div>
               <div class="small muted">${[vName(i.supplier_id), i.vendor_sku ? "#" + i.vendor_sku : "", i.location].filter(Boolean).map(esc).join(" · ") || "No vendor set"}</div>
@@ -1463,8 +1463,32 @@ function supplyDetail(i, vendors, done) {
       ${i.last_ordered ? `<tr><th>Last ordered</th><td>${fmtDate(i.last_ordered)}</td></tr>` : ""}
       ${i.notes ? `<tr><th>Notes</th><td>${esc(i.notes)}</td></tr>` : ""}
     </table>
-    ${canInv() ? '<div class="row" style="margin-top:12px"><button class="btn" id="edit">Edit</button></div>' : ""}`,
-  (root, close) => root.querySelector("#edit")?.addEventListener("click", () => { close(); editSupply(i, vendors, done); }));
+    <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+      <label class="btn" style="margin:0;color:var(--text)" id="snap">📷 ${i.photo_url ? "Retake photo" : "Take a photo"}<input type="file" accept="image/*" capture="environment" id="snapfile" style="display:none"></label>
+      ${canInv() ? '<button class="btn" id="edit">Edit</button>' : ""}
+    </div>`,
+  (root, close) => {
+    root.querySelector("#edit")?.addEventListener("click", () => { close(); editSupply(i, vendors, done); });
+    // Anyone can photograph a supply; only the photo changes.
+    root.querySelector("#snapfile").addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const lbl = root.querySelector("#snap"); lbl.firstChild.textContent = "Uploading… ";
+      try {
+        const path = `${i.id}-${Date.now()}.jpg`;
+        const up = await sb.storage.from("supplies").upload(path, await shrinkImage(file, 1200), { contentType: "image/jpeg" });
+        if (up.error) throw up.error;
+        const url = sb.storage.from("supplies").getPublicUrl(path).data.publicUrl;
+        const { error } = await sb.rpc("set_supply_photo", { p_item: i.id, p_url: url });
+        if (error) throw error;
+        toast("Photo saved. Thanks!");
+        close(); done?.();
+      } catch (err) {
+        toast("Photo didn't save: " + (err.message ?? err));
+        lbl.firstChild.textContent = "📷 Try again";
+      }
+    });
+  });
 }
 
 function editSupply(i, vendors, done) {
