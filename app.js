@@ -1194,7 +1194,7 @@ async function renderSupplies(root) {
   const vName = (id) => shortVendor((vendors ?? []).find((v) => v.id === id)?.name ?? "");
   const q = supQ.toLowerCase();
   const list = (items ?? []).filter((i) =>
-    (supCat === "All" || (supCat === "Low" ? isLow(i) : supCat === "Vendors" ? false : i.category === supCat)) &&
+    (supCat === "All" || (supCat === "Low" ? isLow(i) : supCat === "Vendors" || supCat === "Packaging" ? false : i.category === supCat)) &&
     (!q || [i.name, i.category, i.location, i.vendor_sku, vName(i.supplier_id)].join(" ").toLowerCase().includes(q)));
   const lowCount = (items ?? []).filter(isLow).length;
   const groups = {};
@@ -1204,11 +1204,13 @@ async function renderSupplies(root) {
   root.innerHTML = `
     ${topbar("Supplies", canInv() ? '<button class="btn sm primary" id="new">+ Supply</button>' : "")}
     <input id="q" placeholder="Search sandpaper, glue, vendor…" value="${esc(supQ)}" style="margin-bottom:10px">
-    <div class="chips">${["All", "Low", "Vendors", ...usedCats].map((c) => `<button class="chip ${c === supCat ? "active" : ""}" data-c="${c}">${c === "Low" && lowCount ? `Low (${lowCount})` : c}</button>`).join("")}</div>
+    <div class="chips">${["All", "Low", "Vendors", ...(can("lead") ? ["Packaging"] : []), ...usedCats].map((c) => `<button class="chip ${c === supCat ? "active" : ""}" data-c="${c}">${c === "Low" && lowCount ? `Low (${lowCount})` : c}</button>`).join("")}</div>
     <div id="body" style="margin-top:12px"></div>`;
   const body = root.querySelector("#body");
 
-  if (supCat === "Vendors") {
+  if (supCat === "Packaging") {
+    renderPackaging(body, items ?? [], () => renderSupplies(root));
+  } else if (supCat === "Vendors") {
     body.innerHTML = `${canInv() ? '<div class="row" style="margin-bottom:10px"><button class="btn sm primary" id="newv">+ Vendor</button></div>' : ""}
       <div class="list">${(vendors ?? []).map((v) => {
         const n = (items ?? []).filter((i) => i.supplier_id === v.id);
@@ -1413,6 +1415,84 @@ function editSupply(i, vendors, done) {
       await sb.from("inventory_items").delete().eq("id", i.id);
       log("delete_inventory", "inventory", i.id, { name: i.name });
       close(); done();
+    });
+  });
+}
+
+// ---------------------------------------------------------------- Packaging (auto-deducted from shipped Shopify orders)
+// Recipes say what packaging each product uses. Each night shipped orders are run through
+// apply_packaging() in the database, which subtracts the pieces from Supplies once per order.
+async function renderPackaging(body, items, redo) {
+  const [{ data: rules }, { data: usage }, { data: products }] = await Promise.all([
+    sb.from("packaging_rules").select("*").order("match"),
+    sb.from("packaging_usage").select("*").order("shipped_at", { ascending: false }).limit(40),
+    sb.from("inventory_items").select("name").eq("source", "shopify").order("name"),
+  ]);
+  const nameOf = (id) => items.find((i) => i.id === id)?.name ?? "(deleted supply)";
+  const groups = {};
+  (rules ?? []).filter((r) => r.per === "item").forEach((r) => (groups[r.match] ??= []).push(r));
+  const extras = (rules ?? []).filter((r) => r.per === "order");
+  const canEdit = canInv() || can("admin");
+  const missing = {};
+  (usage ?? []).forEach((u) => (u.unmatched ?? []).forEach((x) => (missing[x.title] = (missing[x.title] ?? 0) + Number(x.qty || 1))));
+  const line = (r) => `${Number(r.qty)} × ${esc(nameOf(r.supply_item_id))}`;
+  body.innerHTML = `
+    <div class="card"><p class="small muted" style="margin:0">Each night, every Shopify order that shipped subtracts its packaging from Supplies, using the recipes below. Local pickups aren't counted, and each order is only counted once.</p></div>
+    <div class="row between" style="margin-top:14px"><h2 class="section" style="margin:0">Every box gets</h2>${canEdit ? '<button class="btn sm" id="extras">Edit</button>' : ""}</div>
+    <div class="card" style="margin-top:6px">${extras.map((r) => `<div class="small">${line(r)}</div>`).join("") || '<div class="small muted">Nothing yet.</div>'}</div>
+    <div class="row between" style="margin-top:14px"><h2 class="section" style="margin:0">Packing recipes</h2>${canEdit ? '<button class="btn sm primary" id="newr">+ Recipe</button>' : ""}</div>
+    ${Object.keys(missing).length ? `<div class="card" style="margin-top:6px;border-color:var(--warn,#c80)"><div class="small"><strong>Shipped without a recipe</strong> (nothing was subtracted for these):</div>
+      ${Object.entries(missing).map(([t, n]) => `<div class="row between small" style="margin-top:4px"><span>${esc(t)} <span class="muted">×${n}</span></span>${canEdit ? `<button class="linkbtn" data-add="${esc(t)}">Add recipe</button>` : ""}</div>`).join("")}</div>` : ""}
+    <div class="list" style="margin-top:6px">${Object.entries(groups).map(([m, rs]) => `
+      <div class="item" data-m="${esc(m)}"><div class="title">${esc(m)}</div><div class="small muted">${rs.map(line).join(" · ")}</div></div>`).join("") || '<div class="empty">No recipes yet.</div>'}</div>
+    <h2 class="section">Recent shipments</h2>
+    <div class="list">${(usage ?? []).map((u) => `<div class="item" style="cursor:default">
+      <div class="row between"><span class="title">${esc(u.order_name ?? u.order_id)}</span><span class="small muted">${u.shipped_at ? fmtDate(u.shipped_at) : ""}</span></div>
+      <div class="small muted">${(u.used ?? []).map((x) => `${Number(x.qty)} × ${esc(x.name)}`).join(" · ") || "Nothing subtracted"}</div>
+      ${(u.unmatched ?? []).length ? `<div class="small" style="color:var(--warn,#c80)">No recipe: ${u.unmatched.map((x) => esc(x.title)).join(", ")}</div>` : ""}</div>`).join("") || '<div class="empty">No shipments counted yet. The first run is tonight.</div>'}</div>`;
+  const pack = items.filter((i) => i.category === "Packaging & shipping");
+  body.querySelector("#newr")?.addEventListener("click", () => editPackRecipe("", [], pack, products ?? [], redo));
+  body.querySelector("#extras")?.addEventListener("click", () => editPackRecipe("*", extras, pack, products ?? [], redo));
+  body.querySelectorAll("[data-add]").forEach((b) => (b.onclick = () => editPackRecipe(b.dataset.add, [], pack, products ?? [], redo)));
+  if (canEdit) body.querySelectorAll("[data-m]").forEach((b) => (b.onclick = () => editPackRecipe(b.dataset.m, groups[b.dataset.m], pack, products ?? [], redo)));
+}
+
+function editPackRecipe(match, rows, pack, products, after) {
+  const isExtras = match === "*";
+  const opts = (sel) => pack.map((i) => `<option value="${i.id}" ${i.id === sel ? "selected" : ""}>${esc(i.name)}</option>`).join("");
+  const rowHtml = (r = {}) => `<div class="row pr" style="gap:6px;margin-top:6px"><input type="number" min="0" step="any" class="pq" value="${r.qty != null ? Number(r.qty) : 1}" style="width:64px">
+    <select class="ps" style="flex:1">${opts(r.supply_item_id)}</select><button type="button" class="btn icon sm" data-rm aria-label="Remove">✕</button></div>`;
+  sheet(`
+    <div class="row between"><h2 style="margin:0">${isExtras ? "Every box gets" : match ? "Packing recipe" : "New packing recipe"}</h2><button class="btn sm" data-close>Close</button></div>
+    <form id="pf" style="margin-top:10px">
+      ${isExtras ? '<p class="small muted">Added once to every shipped order.</p>' : `<label>Product name (or a word in it, like "Chef - End Grain" or "16&quot; x 16&quot;")</label>
+        <input name="match" required value="${esc(match)}" list="shopprods"><datalist id="shopprods">${products.map((p) => `<option value="${esc(p.name)}">`).join("")}</datalist>
+        <p class="small muted" style="margin:4px 0 0">If more than one recipe matches an item, the most specific (longest) one wins. Pieces per item shipped.</p>`}
+      <div id="rows">${(rows.length ? rows : [{}]).map(rowHtml).join("")}</div>
+      <button type="button" class="btn sm" id="addrow" style="margin-top:8px">+ Add packaging</button>
+      <div class="row between" style="margin-top:14px">${rows.length && !isExtras ? '<button type="button" class="btn danger" id="del">Delete</button>' : "<span></span>"}<button class="btn primary">Save</button></div>
+    </form>`, (root, close) => {
+    const wireRm = () => root.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = () => b.closest(".pr").remove()));
+    wireRm();
+    root.querySelector("#addrow").onclick = () => { root.querySelector("#rows").insertAdjacentHTML("beforeend", rowHtml()); wireRm(); };
+    root.querySelector("#pf").onsubmit = async (e) => {
+      e.preventDefault();
+      const m = isExtras ? "*" : e.target.match.value.trim();
+      if (!m || m === "*") return toast("Enter a product name");
+      const lines = [...root.querySelectorAll(".pr")].map((r) => ({ match: m, supply_item_id: r.querySelector(".ps").value, qty: Number(r.querySelector(".pq").value), per: isExtras ? "order" : "item" })).filter((r) => r.qty > 0 && r.supply_item_id);
+      if (isExtras) await sb.from("packaging_rules").delete().eq("per", "order");
+      else {
+        await sb.from("packaging_rules").delete().eq("per", "item").eq("match", m);
+        if (match && match !== m) await sb.from("packaging_rules").delete().eq("per", "item").eq("match", match);
+      }
+      if (lines.length) { const { error } = await sb.from("packaging_rules").insert(lines); if (error) return toast(error.message); }
+      log("packaging_recipe", "packaging", m, { lines: lines.length });
+      toast("Saved"); close(); after?.();
+    };
+    root.querySelector("#del")?.addEventListener("click", async () => {
+      if (!confirm(`Delete the packing recipe for “${match}”?`)) return;
+      await sb.from("packaging_rules").delete().eq("per", "item").eq("match", match);
+      toast("Deleted"); close(); after?.();
     });
   });
 }
