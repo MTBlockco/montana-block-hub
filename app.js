@@ -446,6 +446,8 @@ function jobCard(j, steps) {
     <div class="row between"><span class="title">${esc(j.title)}</span>
       ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
     <div class="small muted">${[j.quantity + " pc", j.product, j.customer, j.assigned_to ? nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
+    ${j.shipped_qty != null ? `<div class="small" style="margin-top:2px">📦 Sent: <strong>${j.shipped_qty}</strong> of ${j.quantity}${j.shipped_at ? " on " + fmtDate(j.shipped_at) : ""}
+      ${seesMoney() ? (state.cache.jobMoney?.[j.id]?.billed_at ? ' <span class="badge ok">Billed</span>' : ' <span class="badge warn">Ready to bill</span>') : ""}</div>` : ""}
     ${j.status !== "Complete" && steps.length ? `<div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div>
       <div class="small muted" style="margin-top:2px">${pct}%${cur ? ` · Now: ${esc(cur.name)} (${cur.done_qty}/${j.quantity})` : " · All steps done"}</div>` : ""}
   </div>`;
@@ -516,6 +518,39 @@ function stopTimer(t, after) {
   });
 }
 
+// Re-open a job's view with fresh data after a change.
+async function reopenJob(id, done) {
+  const { data } = await sb.from("jobs").select("*").eq("id", id).single();
+  if (data) viewJob(data, done); else done?.();
+}
+
+// Final amount sent: what actually went out, so Brittany bills the real count.
+function recordShipped(j, after) {
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+  sheet(`
+    <form class="stack" id="f"><h2>Final amount sent</h2>
+      <p class="small muted" style="margin:0">${esc(j.title)} · ordered ${j.quantity}</p>
+      <div class="grid2">
+        <div><label>Pieces sent</label><input name="shipped_qty" type="number" min="0" step="1" inputmode="numeric" value="${esc(j.shipped_qty ?? j.quantity)}" required></div>
+        <div><label>Date sent</label><input name="shipped_at" type="date" value="${esc(j.shipped_at ?? today)}" required></div>
+      </div>
+      <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
+        ${j.shipped_qty != null ? '<button type="button" class="btn danger" id="clr">Clear</button>' : ""}</div>
+    </form>`, (root, close) => {
+    root.querySelector("#f").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const { error } = await sb.from("jobs").update({ shipped_qty: Math.round(Number(f.shipped_qty)), shipped_at: f.shipped_at, shipped_by: state.profile.id }).eq("id", j.id);
+      if (error) return toast(error.message);
+      log("update_job", "job", j.id, { shipped: Number(f.shipped_qty) });
+      toast("Amount sent saved. Brittany can bill it."); close(); after?.();
+    };
+    root.querySelector("#clr")?.addEventListener("click", async () => {
+      await sb.from("jobs").update({ shipped_qty: null, shipped_at: null, shipped_by: null }).eq("id", j.id); close(); after?.();
+    });
+  });
+}
+
 // Started by accident? Throw it away: no time logged, no pieces counted.
 async function cancelTimer(t, after) {
   const mins = Math.round((Date.now() - new Date(t.started_at)) / 60000);
@@ -552,7 +587,14 @@ async function viewJob(j, done) {
     ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
     ${money ? `<div class="card" style="margin:8px 0;padding:10px"><div class="small muted">💲 Pricing (only you and Brittany see this)</div>
       <div><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
+      ${j.shipped_qty != null && money.unit_price != null ? `<div style="margin-top:4px">Bill for sent: <strong>${usd(j.shipped_qty * money.unit_price)}</strong> <span class="small muted">(${j.shipped_qty} × ${usd(money.unit_price)})</span></div>` : ""}
+      <div class="row between" style="margin-top:6px">${money.billed_at ? `<span class="badge ok">Billed ${fmtDate(money.billed_at)}${money.invoice_number ? " · #" + esc(money.invoice_number) : ""}</span>` : j.shipped_qty != null ? '<span class="badge warn">Ready to bill</span>' : '<span class="small muted">Not billed</span>'}
+        <button class="btn sm" id="billed">${money.billed_at ? "Edit billing" : "Mark billed"}</button></div>
       ${money.money_notes ? `<details><summary class="small">Full PO details</summary><div class="small" style="white-space:pre-wrap">${esc(money.money_notes)}</div></details>` : ""}</div>` : ""}
+    <div class="card" style="margin:8px 0;padding:10px">
+      <div class="row between"><span class="small muted">📦 FINAL AMOUNT SENT</span>${can("lead") ? `<button class="btn sm" id="ship">${j.shipped_qty != null ? "Change" : "Record amount sent"}</button>` : ""}</div>
+      ${j.shipped_qty != null ? `<div><strong>${j.shipped_qty}</strong> of ${j.quantity} pieces${j.shipped_at ? ` · sent ${fmtDate(j.shipped_at)}` : ""}${j.shipped_by ? ` · by ${esc(nameOf(j.shipped_by))}` : ""}${j.shipped_qty !== j.quantity ? ` <span class="badge warn">${j.shipped_qty > j.quantity ? "+" : ""}${j.shipped_qty - j.quantity} vs order</span>` : ""}</div>` : '<div class="small muted">Not sent yet.</div>'}
+    </div>
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
     <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
@@ -617,8 +659,19 @@ async function viewJob(j, done) {
       close(); viewJob(j, done);
     }));
     root.querySelector("#edit")?.addEventListener("click", () => { close(); editJob(j, done, steps ?? []); });
+    root.querySelector("#ship")?.addEventListener("click", () => recordShipped(j, () => { close(); reopenJob(j.id, done); }));
+    root.querySelector("#billed")?.addEventListener("click", async () => {
+      const inv = prompt("Invoice number (leave blank to clear billed):", money?.invoice_number ?? "");
+      if (inv === null) return;
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+      const patch = inv.trim() === "" && money?.billed_at ? { billed_at: null, invoice_number: null } : { billed_at: money?.billed_at ?? today, invoice_number: inv.trim() || null };
+      const { error } = await sb.from("job_financials").upsert({ job_id: j.id, ...patch, updated_at: new Date().toISOString() });
+      if (error) return toast(error.message);
+      toast(patch.billed_at ? "Marked billed" : "Billing cleared"); close(); reopenJob(j.id, done);
+    });
     root.querySelector("#complete")?.addEventListener("click", async () => {
       if (running.length && !confirm("Someone still has a timer running on this job. Complete it anyway?")) return;
+      if (j.shipped_qty == null) { toast("Record the final amount sent first."); return recordShipped(j, () => { close(); reopenJob(j.id, done); }); }
       const { error } = await sb.from("jobs").update({ status: "Complete", completed_at: new Date().toISOString() }).eq("id", j.id);
       if (error) return toast(error.message);
       log("update_job", "job", j.id, { to: "Complete" }); toast("Job complete. Moved to COMPLETE."); close(); done?.();
