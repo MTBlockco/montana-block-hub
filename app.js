@@ -2080,6 +2080,7 @@ async function renderTimeclockAdmin(root) {
       <table><tr><th>Person</th><th>Hours</th></tr>${Object.entries(byUser).sort((a, b) => b[1] - a[1]).map(([id, ms]) => `<tr><td>${esc(nameOf(id))}</td><td>${hm(ms)}</td></tr>`).join("") || '<tr><td colspan="2" class="muted">No punches yet this week.</td></tr>'}</table>
       ${issues.length ? `<p class="small error">${issues.length} punch${issues.length > 1 ? "es" : ""} didn't reach Square: ${issues.map((e) => esc(nameOf(e.user_id)) + " " + new Date(e.clock_in).toLocaleDateString([], { month: "short", day: "numeric" })).join(", ")}. Fix those in Square Team.</p>` : ""}
     </div>`;
+  await renderExtraPay(root);
   const { data: x } = await sb.from("extra_time_entries").select("*").gte("clock_in", weekStart(-1).toISOString()).order("clock_in", { ascending: false });
   if (!(x ?? []).length) return;
   const sum = (list) => list.reduce((a, e) => a + entryMs(e), 0);
@@ -2087,6 +2088,67 @@ async function renderTimeclockAdmin(root) {
   root.insertAdjacentHTML("beforeend", `<div class="card section stack">
     <div class="row between"><h2 style="margin:0">Extra hours (not in Square)</h2><span class="badge">This week ${hm(sum(thisWk))} · Last week ${hm(sum(lastWk))}</span></div>
     ${extraTable(x, true)}</div>`);
+}
+
+// What we owe for extra (off-Square) hours: carried-over balance + extra-clock hours x rate - payments.
+// Admin/owner only; the database blocks everyone else.
+async function renderExtraPay(root) {
+  if (!seesMoney()) return;
+  const [{ data: settings }, { data: ledger }] = await Promise.all([
+    sb.from("extra_pay_settings").select("*"),
+    sb.from("extra_pay_ledger").select("*").order("entry_date", { ascending: false }).order("created_at", { ascending: false }),
+  ]);
+  if (!(settings ?? []).length) return;
+  const oldest = settings.reduce((a, s) => (s.counting_from < a ? s.counting_from : a), settings[0].counting_from);
+  const { data: hrs } = await sb.from("extra_time_entries").select("user_id, clock_in, clock_out").gte("clock_in", oldest).not("clock_out", "is", null);
+  const people = settings.map((s) => {
+    const mine = (ledger ?? []).filter((l) => l.user_id === s.user_id);
+    const ms = (hrs ?? []).filter((e) => e.user_id === s.user_id && e.clock_in >= s.counting_from).reduce((a, e) => a + (new Date(e.clock_out) - new Date(e.clock_in)), 0);
+    const hours = Math.round(ms / 36e5 * 100) / 100;
+    const earned = Math.round(hours * Number(s.hourly_rate) * 100) / 100;
+    const owed = Math.round((mine.reduce((a, l) => a + Number(l.amount), 0) + earned) * 100) / 100;
+    return { s, mine, hours, earned, owed };
+  });
+  const kindLabel = { balance: "Carried over", payment: "Paid", adjustment: "Adjustment" };
+  root.insertAdjacentHTML("beforeend", `<div class="card section stack" id="xpay">
+    <div class="row between"><h2 style="margin:0">💲 Extra hours pay</h2><span class="small muted">Admins only</span></div>
+    ${people.map((p) => `<div class="item" style="cursor:default">
+      <div class="row between"><span class="title">${esc(nameOf(p.s.user_id))}</span>
+        <span class="badge ${p.owed > 0 ? "warn" : "ok"}" style="font-size:1rem">${p.owed > 0 ? "We owe " + usd(p.owed) : p.owed < 0 ? "Overpaid " + usd(-p.owed) : "Paid up"}</span></div>
+      <div class="small muted">${usd(p.s.hourly_rate)}/hr · ${p.hours} hrs on the extra clock since ${fmtDate(p.s.counting_from.slice(0, 10))} = ${usd(p.earned)}</div>
+      <table style="margin-top:6px">${p.mine.slice(0, 8).map((l) => `<tr><td class="small">${fmtDate(l.entry_date)}</td><td class="small">${kindLabel[l.kind]}${l.note ? ` <span class="muted">· ${esc(l.note)}</span>` : ""}</td><td class="small" style="text-align:right;white-space:nowrap">${Number(l.amount) < 0 ? "−" + usd(-l.amount) : usd(l.amount)}</td></tr>`).join("")}</table>
+      <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+        <button class="btn sm primary" data-xpay="${p.s.user_id}" data-k="payment">Record payment</button>
+        <button class="btn sm" data-xpay="${p.s.user_id}" data-k="adjustment">Adjust</button>
+        <button class="btn sm" data-xrate="${p.s.user_id}">Rate</button>
+      </div></div>`).join("")}
+  </div>`);
+  const card = root.querySelector("#xpay");
+  card.querySelectorAll("[data-xpay]").forEach((b) => (b.onclick = () => {
+    const pay = b.dataset.k === "payment", who = nameOf(b.dataset.xpay);
+    sheet(`<form class="stack" id="f"><h2>${pay ? "Payment to" : "Adjust balance for"} ${esc(who)}</h2>
+      <div><label>${pay ? "Amount paid" : "Amount (+ we owe more, − we owe less)"}</label><input name="amount" type="number" step="0.01" inputmode="decimal" required></div>
+      <div><label>Date</label><input name="entry_date" type="date" value="${today()}"></div>
+      <div><label>${pay ? "Paid how" : "Why"}</label><input name="note" placeholder="${pay ? "Cash, check #, product (16x20 & wax)…" : "e.g. forgot to clock out"}"></div>
+      <div class="row between"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, (r, close) => {
+      r.querySelector("#f").onsubmit = async (e) => {
+        e.preventDefault();
+        const f = formData(e.target), amt = Number(f.amount);
+        if (!amt) return toast("Enter an amount");
+        const { error } = await sb.from("extra_pay_ledger").insert({ user_id: b.dataset.xpay, kind: b.dataset.k, amount: pay ? -Math.abs(amt) : amt, entry_date: f.entry_date || today(), note: f.note || null });
+        if (error) return toast(error.message);
+        toast("Saved"); close(); renderTimeclockAdmin(root);
+      };
+    });
+  }));
+  card.querySelectorAll("[data-xrate]").forEach((b) => (b.onclick = async () => {
+    const s = settings.find((x) => x.user_id === b.dataset.xrate);
+    const v = prompt(`Hourly rate for ${nameOf(s.user_id)}'s extra hours`, s.hourly_rate);
+    if (v == null || !Number(v)) return;
+    const { error } = await sb.from("extra_pay_settings").update({ hourly_rate: Number(v), updated_at: new Date().toISOString() }).eq("user_id", s.user_id);
+    if (error) return toast(error.message);
+    toast("Rate saved"); renderTimeclockAdmin(root);
+  }));
 }
 
 async function renderSuppliers(root) {
