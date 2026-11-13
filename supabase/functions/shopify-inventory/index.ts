@@ -95,7 +95,7 @@ async function openOrders() {
       orders(first: 100, after: $after, sortKey: CREATED_AT, query: "status:open AND (fulfillment_status:unfulfilled OR fulfillment_status:partial)") {
         pageInfo { hasNextPage endCursor }
         nodes { id name createdAt tags displayFulfillmentStatus note
-          customer { displayName } shippingAddress { company name } shippingLine { title }
+          shippingAddress { company name } billingAddress { company name } shippingLine { title }
           lineItems(first: 100) { nodes { title variantTitle sku unfulfilledQuantity requiresShipping variant { id } } } } } }`, { after });
     const o = data.orders;
     for (const n of o.nodes) {
@@ -105,7 +105,7 @@ async function openOrders() {
       const wholesale = (n.tags ?? []).some((t: string) => /wholesale/i.test(t)) || lines.some((l: any) => /^wholesale/i.test(l.title));
       out.push({
         id: n.id, name: n.name, created_at: n.createdAt, status: n.displayFulfillmentStatus,
-        customer: n.shippingAddress?.company || n.customer?.displayName || n.shippingAddress?.name || "",
+        customer: n.shippingAddress?.company || n.billingAddress?.company || n.shippingAddress?.name || n.billingAddress?.name || "",
         pickup: /pickup/i.test(n.shippingLine?.title ?? ""), note: n.note ?? null, wholesale, lines,
       });
     }
