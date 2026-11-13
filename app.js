@@ -437,7 +437,8 @@ async function renderJobs(root) {
 // ---------------------------------------------------------------- Materials (lumber to order per job)
 // Each product has a board-foot "recipe" (BF per piece of each species/thickness), taken from the
 // MKC Order Totals sheet. Jobs x recipes = what to order. Lumber prices are admin-only.
-const fmtBF = (n) => Math.ceil(n).toLocaleString("en-US") + " BF";
+const ceilBF = (n) => Math.ceil(Math.round(n * 1000) / 1000);
+const fmtBF = (n) => ceilBF(n).toLocaleString("en-US") + " BF";
 async function loadMaterialData() {
   const [{ data: prods }, { data: recs }, { data: orders }] = await Promise.all([
     sb.from("material_products").select("*").order("product"),
@@ -459,7 +460,7 @@ function matStatus(o) {
   return '<span class="badge warn">Needs ordering</span>';
 }
 function bfLines(needs, prices) {
-  return needs.map((n) => `<div class="row between small"><span>${esc(n.material)}</span><span><strong>${fmtBF(n.bf)}</strong>${seesMoney() && prices[n.material] != null ? ` <span class="muted">· ${usd(Math.ceil(n.bf) * prices[n.material])}</span>` : ""}</span></div>`).join("");
+  return needs.map((n) => `<div class="row between small"><span>${esc(n.material)}</span><span><strong>${fmtBF(n.bf)}</strong>${seesMoney() && prices[n.material] != null ? ` <span class="muted">· ${usd(ceilBF(n.bf) * prices[n.material])}</span>` : ""}</span></div>`).join("");
 }
 
 async function renderMaterials(root, chips, allJobs) {
@@ -474,8 +475,8 @@ async function renderMaterials(root, chips, allJobs) {
     n.forEach((x) => (toOrder[x.material] = (toOrder[x.material] ?? 0) + x.bf));
   });
   const mats = Object.keys(toOrder).sort(matSort);
-  const totalBF = mats.reduce((a, m) => a + Math.ceil(toOrder[m]), 0);
-  const totalCost = mats.reduce((a, m) => a + (prices[m] != null ? Math.ceil(toOrder[m]) * prices[m] : 0), 0);
+  const totalBF = mats.reduce((a, m) => a + ceilBF(toOrder[m]), 0);
+  const totalCost = mats.reduce((a, m) => a + (prices[m] != null ? ceilBF(toOrder[m]) * prices[m] : 0), 0);
   root.innerHTML = `
     ${topbar("Jobs", seesMoney() ? '<button class="btn sm" id="recipes">Recipes &amp; prices</button>' : "")}
     ${chips}
@@ -515,7 +516,7 @@ async function renderMaterials(root, chips, allJobs) {
   root.querySelector("#recipes")?.addEventListener("click", () => recipesSheet(prods, recipe, prices, redo));
   root.querySelectorAll("[data-addrec]").forEach((b) => (b.onclick = () => editRecipe({ product: b.dataset.addrec }, [], redo)));
   root.querySelector("#copy")?.addEventListener("click", async () => {
-    const text = "Lumber order\n" + mats.map((m) => `${m}: ${Math.ceil(toOrder[m])} BF`).join("\n") + `\nTotal: ${totalBF} BF`;
+    const text = "Lumber order\n" + mats.map((m) => `${m}: ${ceilBF(toOrder[m])} BF`).join("\n") + `\nTotal: ${totalBF} BF`;
     try { await navigator.clipboard.writeText(text); toast("Copied. Paste it in a text or email."); } catch { toast("Couldn't copy on this device"); }
   });
   const setOrder = async (id, patch, msg) => {
@@ -534,7 +535,7 @@ async function renderMaterials(root, chips, allJobs) {
     const p = root.querySelector("#cprod").value, q = Number(root.querySelector("#cqty").value) || 0;
     root.querySelector("#cnote").textContent = prods.find((x) => x.product === p)?.note ?? "";
     const n = jobNeeds({ product: p, quantity: q }, recipe);
-    const tot = n.reduce((a, x) => a + Math.ceil(x.bf), 0), cost = n.reduce((a, x) => a + (prices[x.material] != null ? Math.ceil(x.bf) * prices[x.material] : 0), 0);
+    const tot = n.reduce((a, x) => a + ceilBF(x.bf), 0), cost = n.reduce((a, x) => a + (prices[x.material] != null ? ceilBF(x.bf) * prices[x.material] : 0), 0);
     root.querySelector("#cout").innerHTML = q ? bfLines(n, prices) + `<div class="row between" style="border-top:1px solid var(--line);margin-top:6px;padding-top:6px"><strong>Total</strong><span><strong>${tot.toLocaleString("en-US")} BF</strong>${seesMoney() && cost ? ` · <strong>${usd(cost)}</strong>` : ""}</span></div>` : "";
   };
   root.querySelector("#cprod")?.addEventListener("change", calc);
