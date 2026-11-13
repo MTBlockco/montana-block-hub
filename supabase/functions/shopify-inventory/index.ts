@@ -26,13 +26,18 @@ async function shopifyToken() {
   return cachedToken.value;
 }
 
-async function gql(query: string, variables: Record<string, unknown> = {}) {
+async function gql(query: string, variables: Record<string, unknown> = {}, retried = false): Promise<any> {
   const res = await fetch(`https://${SHOP}/admin/api/${API}/graphql.json`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Shopify-Access-Token": await shopifyToken() },
     body: JSON.stringify({ query, variables }),
   });
   const out = await res.json();
+  // A saved token can predate newly granted permissions; get a fresh one and try once more.
+  if (!retried && (res.status === 401 || JSON.stringify(out.errors ?? "").includes("ACCESS_DENIED"))) {
+    cachedToken = null;
+    return gql(query, variables, true);
+  }
   if (!res.ok || out.errors) throw new Error(`Shopify error: ${JSON.stringify(out.errors ?? out).slice(0, 300)}`);
   return out.data;
 }
