@@ -418,9 +418,13 @@ async function renderJobs(root) {
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
+  if (jobFilter === "Materials" && !can("lead")) jobFilter = "Active";
+  const tabs = can("lead") ? ["Active", "Complete", "Materials"] : ["Active", "Complete"];
+  const chips = `<div class="chips">${tabs.map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()}${counts[f] != null ? ` <span class="small">${counts[f]}</span>` : ""}</button>`).join("")}</div>`;
+  if (jobFilter === "Materials") return renderMaterials(root, chips, jobs ?? []);
   root.innerHTML = `
     ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
-    <div class="chips">${["Active", "Complete"].map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()} <span class="small">${counts[f]}</span></button>`).join("")}</div>
+    ${chips}
     <div id="mytimer" style="margin-top:12px"></div>
     <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed yet."}</div>`}</div>`;
   wireTopbar(root);
@@ -428,6 +432,185 @@ async function renderJobs(root) {
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
+}
+
+// ---------------------------------------------------------------- Materials (lumber to order per job)
+// Each product has a board-foot "recipe" (BF per piece of each species/thickness), taken from the
+// MKC Order Totals sheet. Jobs x recipes = what to order. Lumber prices are admin-only.
+const fmtBF = (n) => Math.ceil(n).toLocaleString("en-US") + " BF";
+async function loadMaterialData() {
+  const [{ data: prods }, { data: recs }, { data: orders }] = await Promise.all([
+    sb.from("material_products").select("*").order("product"),
+    sb.from("material_recipes").select("*").order("position"),
+    sb.from("job_material_orders").select("*"),
+  ]);
+  const prices = {};
+  if (seesMoney()) ((await sb.from("material_prices").select("*")).data ?? []).forEach((p) => (prices[p.material] = p.price_per_bf));
+  const recipe = {};
+  (recs ?? []).forEach((r) => (recipe[r.product] ??= []).push(r));
+  const ord = Object.fromEntries((orders ?? []).map((o) => [o.job_id, o]));
+  return { prods: prods ?? [], recipe, ord, prices };
+}
+const jobNeeds = (j, recipe) => (recipe[j.product] ?? []).map((r) => ({ material: r.material, bf: Number(r.bf_per_piece) * (j.quantity ?? 0) }));
+const matSort = (a, b) => a.localeCompare(b, "en", { numeric: true });
+function matStatus(o) {
+  if (o?.received_at) return `<span class="badge ok">Received ${fmtDate(o.received_at)}</span>`;
+  if (o?.ordered_at) return `<span class="badge">Ordered ${fmtDate(o.ordered_at)}</span>`;
+  return '<span class="badge warn">Needs ordering</span>';
+}
+function bfLines(needs, prices) {
+  return needs.map((n) => `<div class="row between small"><span>${esc(n.material)}</span><span><strong>${fmtBF(n.bf)}</strong>${seesMoney() && prices[n.material] != null ? ` <span class="muted">· ${usd(Math.ceil(n.bf) * prices[n.material])}</span>` : ""}</span></div>`).join("");
+}
+
+async function renderMaterials(root, chips, allJobs) {
+  const { prods, recipe, ord, prices } = await loadMaterialData();
+  const jobs = allJobs.filter((j) => j.status !== "Complete");
+  const toOrder = {};
+  let pending = 0;
+  jobs.forEach((j) => {
+    if (ord[j.id]?.ordered_at) return;
+    const n = jobNeeds(j, recipe);
+    if (n.length) pending++;
+    n.forEach((x) => (toOrder[x.material] = (toOrder[x.material] ?? 0) + x.bf));
+  });
+  const mats = Object.keys(toOrder).sort(matSort);
+  const totalBF = mats.reduce((a, m) => a + Math.ceil(toOrder[m]), 0);
+  const totalCost = mats.reduce((a, m) => a + (prices[m] != null ? Math.ceil(toOrder[m]) * prices[m] : 0), 0);
+  root.innerHTML = `
+    ${topbar("Jobs", seesMoney() ? '<button class="btn sm" id="recipes">Recipes &amp; prices</button>' : "")}
+    ${chips}
+    <div class="card" style="margin-top:12px">
+      <div class="row between"><h3 style="margin:0">🪵 Lumber to order</h3>${mats.length ? '<button class="btn sm" id="copy">Copy list</button>' : ""}</div>
+      ${mats.length ? `<p class="small muted" style="margin:4px 0 8px">For ${pending} job${pending === 1 ? "" : "s"} not marked ordered yet. Rounded up to the whole board foot.</p>
+        ${bfLines(mats.map((m) => ({ material: m, bf: toOrder[m] })), prices)}
+        <div class="row between" style="border-top:1px solid var(--line);margin-top:6px;padding-top:6px"><strong>Total</strong><span><strong>${totalBF.toLocaleString("en-US")} BF</strong>${seesMoney() && totalCost ? ` · <strong>${usd(totalCost)}</strong>` : ""}</span></div>`
+        : '<p class="small muted" style="margin:6px 0 0">Nothing to order. Every active job is marked ordered (or has no recipe yet).</p>'}
+    </div>
+    <h3 class="section" style="margin-bottom:4px">Active jobs</h3>
+    <div class="list">${jobs.map((j) => {
+      const n = jobNeeds(j, recipe), o = ord[j.id];
+      return `<div class="item" style="cursor:default">
+        <div class="row between"><span class="title">${esc(j.title)}</span>${n.length ? matStatus(o) : ""}</div>
+        <div class="small muted">${[j.quantity + " pc", j.product, j.due_date ? "Due " + fmtDate(j.due_date) : ""].filter(Boolean).map(esc).join(" · ")}</div>
+        ${n.length ? `<div style="margin-top:6px">${bfLines(n, prices)}</div>
+          <div class="row" style="gap:6px;margin-top:8px;flex-wrap:wrap">
+            ${!o?.ordered_at ? `<button class="btn sm primary" data-ordered="${j.id}">Mark ordered</button>` : ""}
+            ${o?.ordered_at && !o?.received_at ? `<button class="btn sm primary" data-received="${j.id}">Mark received</button>` : ""}
+            ${o?.ordered_at ? `<button class="btn sm" data-undo="${j.id}">Undo</button>` : ""}
+          </div>`
+        : `<p class="small muted" style="margin:6px 0 0">No board-foot recipe for “${esc(j.product || "no product set")}”.${seesMoney() ? ` <button class="linkbtn" data-addrec="${esc(j.product || "")}">Add one</button>` : " Ask Mitchell to add it."}</p>`}
+      </div>`;
+    }).join("") || '<div class="empty">No active jobs.</div>'}</div>
+    <h3 class="section" style="margin-bottom:4px">Quick calculator</h3>
+    <div class="card">
+      <p class="small muted" style="margin:0 0 8px">Figure lumber for an order before it's a job.</p>
+      <div class="row" style="gap:8px"><select id="cprod" style="flex:2">${prods.map((p) => `<option>${esc(p.product)}</option>`).join("")}</select>
+        <input id="cqty" type="number" inputmode="numeric" min="0" placeholder="Pieces" style="flex:1"></div>
+      <div id="cnote" class="small muted" style="margin-top:6px"></div>
+      <div id="cout" style="margin-top:6px"></div>
+    </div>`;
+  wireTopbar(root);
+  root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
+  const redo = () => renderJobs(root);
+  root.querySelector("#recipes")?.addEventListener("click", () => recipesSheet(prods, recipe, prices, redo));
+  root.querySelectorAll("[data-addrec]").forEach((b) => (b.onclick = () => editRecipe({ product: b.dataset.addrec }, [], redo)));
+  root.querySelector("#copy")?.addEventListener("click", async () => {
+    const text = "Lumber order\n" + mats.map((m) => `${m}: ${Math.ceil(toOrder[m])} BF`).join("\n") + `\nTotal: ${totalBF} BF`;
+    try { await navigator.clipboard.writeText(text); toast("Copied. Paste it in a text or email."); } catch { toast("Couldn't copy on this device"); }
+  });
+  const setOrder = async (id, patch, msg) => {
+    const { error } = await sb.from("job_material_orders").upsert({ job_id: id, ...patch, updated_at: new Date().toISOString() });
+    if (error) return toast(error.message);
+    log("material_order", "job", id, patch); toast(msg); redo();
+  };
+  const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+  root.querySelectorAll("[data-ordered]").forEach((b) => (b.onclick = () => setOrder(b.dataset.ordered, { ordered_at: today(), ordered_by: state.profile.id }, "Marked ordered")));
+  root.querySelectorAll("[data-received]").forEach((b) => (b.onclick = () => setOrder(b.dataset.received, { received_at: today() }, "Marked received")));
+  root.querySelectorAll("[data-undo]").forEach((b) => (b.onclick = () => {
+    const o = ord[b.dataset.undo];
+    setOrder(b.dataset.undo, o?.received_at ? { received_at: null } : { ordered_at: null, ordered_by: null }, "Undone");
+  }));
+  const calc = () => {
+    const p = root.querySelector("#cprod").value, q = Number(root.querySelector("#cqty").value) || 0;
+    root.querySelector("#cnote").textContent = prods.find((x) => x.product === p)?.note ?? "";
+    const n = jobNeeds({ product: p, quantity: q }, recipe);
+    const tot = n.reduce((a, x) => a + Math.ceil(x.bf), 0), cost = n.reduce((a, x) => a + (prices[x.material] != null ? Math.ceil(x.bf) * prices[x.material] : 0), 0);
+    root.querySelector("#cout").innerHTML = q ? bfLines(n, prices) + `<div class="row between" style="border-top:1px solid var(--line);margin-top:6px;padding-top:6px"><strong>Total</strong><span><strong>${tot.toLocaleString("en-US")} BF</strong>${seesMoney() && cost ? ` · <strong>${usd(cost)}</strong>` : ""}</span></div>` : "";
+  };
+  root.querySelector("#cprod")?.addEventListener("change", calc);
+  root.querySelector("#cqty")?.addEventListener("input", calc);
+  if (prods.length) calc();
+}
+
+// Inside a job: what lumber it takes and whether it's been ordered.
+async function fillJobMaterials(el, j) {
+  if (!el || !j.product) return;
+  const { recipe, ord, prices } = await loadMaterialData();
+  const n = jobNeeds(j, recipe);
+  if (!n.length) return;
+  el.innerHTML = `<details class="card" style="margin:8px 0;padding:10px"><summary class="small muted" style="cursor:pointer">🪵 Lumber for this job · ${fmtBF(n.reduce((a, x) => a + x.bf, 0))} ${matStatus(ord[j.id])}</summary>
+    <div style="margin-top:6px">${bfLines(n, prices)}</div></details>`;
+}
+
+function recipesSheet(prods, recipe, prices, after) {
+  const mats = [...new Set([...Object.keys(prices), ...Object.values(recipe).flat().map((r) => r.material)])].sort(matSort);
+  sheet(`
+    <div class="row between"><h2 style="margin:0">Recipes &amp; lumber prices</h2><button class="btn sm" data-close>Close</button></div>
+    <p class="small muted">Board feet per piece for each product. Leads see board feet; only you and Brittany see prices.</p>
+    <div class="row between"><h3 class="section" style="margin:0">Products</h3><button class="btn sm primary" id="addp">+ Product</button></div>
+    <div class="list" style="margin-top:6px">${prods.map((p) => `<div class="item" data-p="${esc(p.product)}">
+      <div class="title">${esc(p.product)}</div>
+      <div class="small muted">${(recipe[p.product] ?? []).map((r) => `${esc(r.material)} ${Number(r.bf_per_piece)}`).join(" · ") || "No materials yet"}</div></div>`).join("")}</div>
+    <h3 class="section">Lumber price per BF</h3>
+    <form id="pf"><table><tr><th>Material</th><th>$ / BF</th></tr>
+      ${mats.map((m) => `<tr><td>${esc(m)}</td><td><input name="${esc(m)}" type="number" step="0.01" min="0" value="${prices[m] ?? ""}" style="width:90px"></td></tr>`).join("")}
+    </table><button class="btn primary" style="margin-top:10px">Save prices</button></form>`, (root, close) => {
+    root.querySelector("#addp").onclick = () => { close(); editRecipe({}, [], after); };
+    root.querySelectorAll("[data-p]").forEach((b) => (b.onclick = () => { close(); editRecipe(prods.find((p) => p.product === b.dataset.p), recipe[b.dataset.p] ?? [], after); }));
+    root.querySelector("#pf").onsubmit = async (e) => {
+      e.preventDefault();
+      const rows = Object.entries(formData(e.target)).filter(([, v]) => v !== "").map(([material, v]) => ({ material, price_per_bf: Number(v), updated_at: new Date().toISOString() }));
+      const { error } = await sb.from("material_prices").upsert(rows);
+      if (error) return toast(error.message);
+      toast("Prices saved"); close(); after?.();
+    };
+  });
+}
+
+function editRecipe(p, rows, after) {
+  sheet(`
+    <div class="row between"><h2 style="margin:0">${rows.length ? "Edit recipe" : "New recipe"}</h2><button class="btn sm" data-close>Close</button></div>
+    <form id="rf" style="margin-top:10px">
+      <label>Product (must match the job's product)</label><input name="product" required value="${esc(p.product ?? "")}" list="prodlist">
+      <datalist id="prodlist">${[...new Set((state.cache.jobs ?? []).map((j) => j.product).filter(Boolean))].map((x) => `<option value="${esc(x)}">`).join("")}</datalist>
+      <label>Glue-up / cutting note</label><input name="note" value="${esc(p.note ?? "")}" placeholder="e.g. 9' x 35&quot; glue-up">
+      <label>Board feet per piece, one material per line</label>
+      <textarea name="lines" style="min-height:110px" placeholder="8/4 Walnut: 1.75&#10;8/4 Cherry: 1.75">${rows.map((r) => `${esc(r.material)}: ${Number(r.bf_per_piece)}`).join("\n")}</textarea>
+      <div class="row between" style="margin-top:12px">${rows.length ? '<button type="button" class="btn danger" id="del">Delete</button>' : "<span></span>"}<button class="btn primary">Save</button></div>
+    </form>`, (root, close) => {
+    root.querySelector("#rf").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const lines = f.lines.split("\n").map((l) => l.trim()).filter(Boolean).map((l, i) => {
+        const m = l.match(/^(.+?)\s*[:=]\s*([\d.]+)\s*$/);
+        return m ? { product: f.product, material: m[1].trim(), bf_per_piece: Number(m[2]), position: i + 1 } : null;
+      });
+      if (!lines.length || lines.includes(null)) return toast('Use one line per material, like "8/4 Walnut: 1.75"');
+      const old = p.product && p.product !== f.product ? p.product : null;
+      let r = await sb.from("material_products").upsert({ product: f.product, note: f.note || null, updated_at: new Date().toISOString() });
+      if (r.error) return toast(r.error.message);
+      if (old) await sb.from("material_products").delete().eq("product", old);
+      await sb.from("material_recipes").delete().eq("product", f.product);
+      r = await sb.from("material_recipes").insert(lines);
+      if (r.error) return toast(r.error.message);
+      toast("Recipe saved"); close(); after?.();
+    };
+    root.querySelector("#del")?.addEventListener("click", async () => {
+      if (!confirm(`Delete the recipe for ${p.product}?`)) return;
+      await sb.from("material_products").delete().eq("product", p.product);
+      toast("Deleted"); close(); after?.();
+    });
+  });
 }
 
 // Progress = pieces through all steps / (pieces x steps).
@@ -595,6 +778,7 @@ async function viewJob(j, done) {
       <div class="row between"><span class="small muted">📦 FINAL AMOUNT SENT</span>${can("lead") ? `<button class="btn sm" id="ship">${j.shipped_qty != null ? "Change" : "Record amount sent"}</button>` : ""}</div>
       ${j.shipped_qty != null ? `<div><strong>${j.shipped_qty}</strong> of ${j.quantity} pieces${j.shipped_at ? ` · sent ${fmtDate(j.shipped_at)}` : ""}${j.shipped_by ? ` · by ${esc(nameOf(j.shipped_by))}` : ""}${j.shipped_qty !== j.quantity ? ` <span class="badge warn">${j.shipped_qty > j.quantity ? "+" : ""}${j.shipped_qty - j.quantity} vs order</span>` : ""}</div>` : '<div class="small muted">Not sent yet.</div>'}
     </div>
+    <div id="jobmat"></div>
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
     <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
@@ -624,6 +808,7 @@ async function viewJob(j, done) {
       ${can("lead") && j.status !== "Complete" ? '<button class="btn primary" id="complete">Mark complete</button>' : ""}
       ${can("lead") && j.status === "Complete" ? '<button class="btn" id="reopen">Reopen</button>' : ""}
     </div>`, (root, close) => {
+    fillJobMaterials(root.querySelector("#jobmat"), j);
     root.querySelectorAll("[data-start]").forEach((b) => (b.onclick = async () => {
       const { error } = await sb.rpc("job_timer_start", { p_step: b.dataset.start });
       if (error) return toast(error.message);
