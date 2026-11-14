@@ -16,6 +16,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ROLES = ["pending", "shop", "lead", "admin", "owner"];
 const ROLE_LABEL = { pending: "Pending", shop: "Shop", lead: "Lead", admin: "Admin", owner: "Owner" };
 const can = (min) => state.profile && ROLES.indexOf(state.profile.role) >= ROLES.indexOf(min);
+const isOwner = () => state.profile?.role === "owner";
 const canInv = () => state.profile && (state.profile.role === "owner" || state.profile.can_edit_inventory);
 const hm = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
 const timeOf = (t) => new Date(t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -915,10 +916,11 @@ async function viewJob(j, done) {
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
     <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
-    <h3 class="section" style="margin-bottom:4px">Steps</h3>
+    <div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">Steps</h3>${isOwner() ? '<button class="btn sm" id="arrange">Arrange steps</button>' : ""}</div>
+    ${isOwner() ? '<p class="small muted" style="margin:0 0 6px">Press and hold a step to rename, move or remove it.</p>' : ""}
     <div class="list">${(steps ?? []).map((st) => {
       const s10 = statFor(st.name);
-      return `<div class="item" style="cursor:default">
+      return `<div class="item${isOwner() ? " hold" : ""}" data-step="${st.id}" style="cursor:default">
         <div class="row between"><span class="title">${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
         <div class="progress thin" style="margin:6px 0"><span style="width:${Math.min(100, Math.round(st.done_qty / j.quantity * 100))}%"></span></div>
         <div class="row between" style="gap:6px;flex-wrap:wrap">
@@ -999,10 +1001,77 @@ async function viewJob(j, done) {
     root.querySelector("#reopen")?.addEventListener("click", async () => {
       await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();
     });
+    if (isOwner()) {
+      const reopenIt = () => reopenJob(j.id, done);
+      root.querySelector("#arrange")?.addEventListener("click", () => { close(); arrangeSteps(j, steps ?? [], null, reopenIt); });
+      root.querySelectorAll(".item.hold[data-step]").forEach((el) => onHold(el, () => { close(); arrangeSteps(j, steps ?? [], el.dataset.step, reopenIt); }));
+    }
     root.querySelectorAll("[data-tedit]").forEach((r) => (r.onclick = () => {
       const t = timers.find((x) => x.id === r.dataset.tedit);
       editTimer(t, steps ?? [], () => { close(); reopenJob(j.id, done); });
     }));
+  });
+}
+
+// Owner only: rename, reorder, add or remove a job's steps. Changes save as you go.
+function arrangeSteps(j, steps, focusId, after) {
+  let list = [...steps].sort((a, b) => a.position - b.position);
+  sheet(`<div id="arr"></div>`, (root, close) => {
+    const box = root.querySelector("#arr");
+    const persist = async () => {
+      const changed = list.map((s, i) => ({ s, i })).filter(({ s, i }) => s.position !== i);
+      for (const { s, i } of changed) {
+        const { error } = await sb.from("job_steps").update({ position: i }).eq("id", s.id);
+        if (error) return toast(error.message);
+        s.position = i;
+      }
+    };
+    const draw = () => {
+      box.innerHTML = `
+        <div class="row between"><h2 style="margin:0">Arrange steps</h2><button class="btn sm primary" id="donearr">Done</button></div>
+        <p class="small muted" style="margin:4px 0 10px">${esc(j.title)} · changes save right away.</p>
+        <div class="list">${list.map((s, i) => `
+          <div class="item" style="cursor:default;${s.id === focusId ? "border-color:var(--accent)" : ""}">
+            <div class="row between" style="gap:6px">
+              <span class="title" style="min-width:0;flex:1">${i + 1}. ${esc(s.name)} <span class="small muted">${s.done_qty}/${j.quantity}</span></span>
+              <span class="row" style="gap:4px">
+                <button class="btn icon sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+                <button class="btn icon sm" data-down="${i}" ${i === list.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+                <button class="btn icon sm" data-ren="${s.id}" aria-label="Rename">✎</button>
+                <button class="btn icon sm" data-del="${s.id}" aria-label="Remove">🗑</button>
+              </span></div></div>`).join("") || '<div class="empty">No steps.</div>'}</div>
+        <form class="row" id="addst" style="margin-top:10px;gap:6px"><input name="name" placeholder="New step name" required style="flex:1"><button class="btn">+ Add</button></form>`;
+      box.querySelector("#donearr").onclick = () => { close(); after?.(); };
+      const move = async (i, d) => { [list[i], list[i + d]] = [list[i + d], list[i]]; focusId = list[i + d].id; draw(); await persist(); log("reorder_steps", "job", j.id, { order: list.map((s) => s.name) }); };
+      box.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(Number(b.dataset.up), -1)));
+      box.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(Number(b.dataset.down), 1)));
+      box.querySelectorAll("[data-ren]").forEach((b) => (b.onclick = async () => {
+        const s = list.find((x) => x.id === b.dataset.ren);
+        const name = prompt("Step name (keep names the same across jobs so the time averages line up):", s.name)?.trim();
+        if (!name || name === s.name) return;
+        const { error } = await sb.from("job_steps").update({ name }).eq("id", s.id);
+        if (error) return toast(error.message);
+        log("rename_step", "job", j.id, { from: s.name, to: name }); s.name = name; focusId = s.id; draw();
+      }));
+      box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+        const s = list.find((x) => x.id === b.dataset.del);
+        const { count } = await sb.from("job_timers").select("id", { count: "exact", head: true }).eq("step_id", s.id);
+        if (!confirm(`Remove "${s.name}" from this job?${count ? ` Its ${count} time entr${count > 1 ? "ies" : "y"} and notes will be deleted too.` : ""}`)) return;
+        const { error } = await sb.from("job_steps").delete().eq("id", s.id);
+        if (error) return toast(error.message);
+        log("delete_step", "job", j.id, { name: s.name, timers: count ?? 0 });
+        list = list.filter((x) => x.id !== s.id); draw(); await persist();
+      }));
+      box.querySelector("#addst").onsubmit = async (e) => {
+        e.preventDefault();
+        const name = formData(e.target).name.trim(); if (!name) return;
+        const at = focusId ? list.findIndex((x) => x.id === focusId) + 1 : list.length;
+        const { data, error } = await sb.from("job_steps").insert({ job_id: j.id, name, position: at, done_qty: 0 }).select().single();
+        if (error) return toast(error.message);
+        list.splice(at, 0, data); focusId = data.id; log("add_step", "job", j.id, { name }); draw(); await persist();
+      };
+    };
+    draw();
   });
 }
 
