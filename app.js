@@ -491,7 +491,7 @@ async function loadOpenOrders(force) {
   if (!force && c && Date.now() - c.at < 120000) return c;
   const [res, { data: inv }] = await Promise.all([
     fnCall("shopify-inventory", { action: "open_orders" }),
-    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id").in("source", ["shopify", "wholesale"]),
+    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id").in("source", ["shopify", "wholesale", "product"]),
   ]);
   const out = { at: Date.now(), error: res?.error ?? null, orders: res?.orders ?? [], inv: inv ?? [] };
   if (!out.error) state.cache.openOrders = out;
@@ -1221,7 +1221,7 @@ async function editJob(j = {}, done, steps = null) {
 let invCat = "All", invQ = "", invTab = "Website";
 async function renderInventory(root) {
   if (invTab === "Wholesale") return renderWholesale(root);
-  const { data: items } = await sb.from("inventory_items").select("*").eq("source", "shopify").order("category").order("name");
+  const { data: items } = await sb.from("inventory_items").select("*").in("source", ["shopify", "product"]).order("category").order("name");
   state.cache.inventory = items ?? [];
   let suppliers = [];
   if (can("lead")) suppliers = (await sb.from("suppliers").select("id, name").order("name")).data ?? [];
@@ -1232,7 +1232,7 @@ async function renderInventory(root) {
     (!q || [i.name, i.sku, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
   const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
-    ${topbar("Products", canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button>' : "")}
+    ${topbar("Products", (canInv() ? '<button class="btn sm primary" id="newprod">+ Product</button>' : "") + (canInv() ? '<button class="btn sm" id="sync">Sync Shopify</button>' : ""))}
     ${productTabs()}
     <input id="q" placeholder="Search boards, SKU…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
@@ -1242,7 +1242,7 @@ async function renderInventory(root) {
         <div class="row between">
           ${photoSlot(i)}
           <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
-            <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
+            <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : i.source === "product" ? `<span class="badge warn">App only</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
           ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>${canInv() ? '<button class="btn sm" data-set>Count</button>' : ""}</div>` : !canInv() ? `<div class="qty"><span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
           <div class="qty">
             <button class="btn icon sm" data-adj="-1" aria-label="Decrease">−</button>
@@ -1258,6 +1258,7 @@ async function renderInventory(root) {
   wireProductTabs(root);
   wireSnaps(root, () => renderInventory(root));
   root.querySelector("#new")?.addEventListener("click", () => editItem());
+  root.querySelector("#newprod")?.addEventListener("click", () => newAppProduct(() => renderInventory(root)));
   root.querySelector("#sync")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "Syncing…";
     const r = await fnCall("shopify-inventory", { action: "sync" });
@@ -1312,6 +1313,48 @@ function wireSnaps(root, rerender) {
   }));
 }
 
+// Products added in the app only (not on Shopify / the website). They sit in the WEBSITE INVENTORY list with an "App only" tag.
+function newAppProduct(done) {
+  let photoFile = null;
+  sheet(`<form class="stack" id="np">
+    <h2>New product</h2>
+    <p class="small muted" style="margin:0">Tracked in the app only. It won't be added to Shopify or the website.</p>
+    <div><label>Product name</label><input name="name" required></div>
+    <div class="grid2">
+      <div><label>On hand</label><input name="quantity" type="number" step="1" min="0" inputmode="numeric" value="0" required></div>
+      <div><label>Category</label><select name="category">${INV_CATS.map((c) => `<option>${c}</option>`).join("")}</select></div>
+      <div><label>SKU (optional)</label><input name="sku"></div>
+      <div><label>Where it's kept (optional)</label><input name="location"></div>
+    </div>
+    <div class="row" style="gap:10px"><label class="btn sm" style="margin:0;color:var(--text)">📷 Add photo<input type="file" accept="image/*" id="npphoto" style="display:none"></label>
+      <img id="npph" style="display:none;width:56px;height:56px;object-fit:cover;border-radius:8px"></div>
+    <div><label>Notes (optional)</label><textarea name="notes" style="min-height:60px"></textarea></div>
+    <div class="row wrap"><button class="btn primary">Add product</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (root, close) => {
+    root.querySelector("#npphoto").onchange = (e) => { photoFile = e.target.files[0] ?? null; if (photoFile) { const ph = root.querySelector("#npph"); ph.src = URL.createObjectURL(photoFile); ph.style.display = ""; } };
+    root.querySelector("#np").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target), btn = e.target.querySelector(".primary");
+      btn.disabled = true;
+      try {
+        const row = { name: f.name, category: f.category, sku: f.sku || null, location: f.location || null, notes: f.notes || null,
+          quantity: Math.max(0, Math.round(Number(f.quantity))), unit: "ea", source: "product" };
+        if (photoFile) {
+          const blob = await shrinkImage(photoFile, 1200);
+          const path = `products/${crypto.randomUUID()}.jpg`;
+          const up = await sb.storage.from("supplies").upload(path, blob, { contentType: blob.type || "image/jpeg" });
+          if (up.error) throw up.error;
+          row.photo_url = sb.storage.from("supplies").getPublicUrl(path).data.publicUrl;
+        }
+        const { data, error } = await sb.from("inventory_items").insert(row).select().single();
+        if (error) throw error;
+        log("create_inventory", "inventory", data.id, { name: row.name, quantity: row.quantity, app_only: true });
+        toast("Product added"); close(); done?.();
+      } catch (err) { toast(err.message ?? String(err)); btn.disabled = false; }
+    };
+  });
+}
+
 function productTabs() {
   return `<div class="seg" style="margin-bottom:10px">${["Website", "Wholesale"].map((t) => `<button class="${invTab === t ? "active" : ""}" data-tab="${t}">${t === "Website" ? "WEBSITE INVENTORY" : "WHOLESALE"}</button>`).join("")}</div>`;
 }
@@ -1331,7 +1374,7 @@ async function renderWholesale(root) {
   const totalPcs = (items ?? []).reduce((a, i) => a + Number(i.quantity), 0);
   const totalVal = (items ?? []).reduce((a, i) => a + Number(i.quantity) * Number(i.wholesale_price ?? 0), 0);
   root.innerHTML = `
-    ${topbar("Products", canInv() ? '<button class="btn sm primary" id="new">+ Item</button>' : "")}
+    ${topbar("Products", canInv() ? '<button class="btn sm primary" id="new">+ Product</button>' : "")}
     ${productTabs()}
     <input id="q" placeholder="Search patterns, species, bins…" value="${esc(whQ)}" style="margin-bottom:6px">
     <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && seesMoney() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
