@@ -1063,11 +1063,19 @@ function arrangeSteps(j, steps, focusId, after) {
       box.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(Number(b.dataset.down), 1)));
       box.querySelectorAll("[data-ren]").forEach((b) => (b.onclick = async () => {
         const s = list.find((x) => x.id === b.dataset.ren);
-        const name = prompt("Step name (keep names the same across jobs so the time averages line up):", s.name)?.trim();
+        const name = prompt("New name for this process:", s.name)?.trim();
         if (!name || name === s.name) return;
-        const { error } = await sb.from("job_steps").update({ name }).eq("id", s.id);
-        if (error) return toast(error.message);
-        log("rename_step", "job", j.id, { from: s.name, to: name }); s.name = name; focusId = s.id; draw();
+        const everywhere = confirm(`Rename "${s.name}" to "${name}" on EVERY job and in the standard list?\n\nOK = everywhere (keeps the time averages together)\nCancel = just this job`);
+        if (everywhere) {
+          const { data: n, error } = await sb.rpc("rename_process", { p_old: s.name, p_new: name });
+          if (error) return toast(error.message);
+          toast(`Renamed on ${n} job step${n === 1 ? "" : "s"}`);
+        } else {
+          const { error } = await sb.from("job_steps").update({ name }).eq("id", s.id);
+          if (error) return toast(error.message);
+          log("rename_step", "job", j.id, { from: s.name, to: name });
+        }
+        s.name = name; focusId = s.id; draw();
       }));
       box.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
         const s = list.find((x) => x.id === b.dataset.del);
@@ -1151,6 +1159,7 @@ async function editJob(j = {}, done, steps = null) {
   const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending");
   const { data: past } = await sb.from("jobs").select("product").not("product", "is", null).limit(200);
   const fin = seesMoney() && j.id ? (await sb.from("job_financials").select("*").eq("job_id", j.id).maybeSingle()).data ?? {} : {};
+  const stdSteps = j.id ? [] : ((await sb.from("process_names").select("name").order("position")).data ?? []).map((p) => p.name);
   const productOpts = [...new Set([...(past ?? []).map((p) => p.product), ...((state.cache.sopTitles) ?? [])])].filter(Boolean).sort();
   sheet(`
     <form class="stack" id="f">
@@ -1165,7 +1174,7 @@ async function editJob(j = {}, done, steps = null) {
         <div><label>Priority</label><select name="priority">${["Low", "Normal", "Rush"].map((p) => `<option ${(j.priority ?? "Normal") === p ? "selected" : ""}>${p}</option>`).join("")}</select></div>
         <div><label>Lead on this job</label><select name="assigned_to"><option value="">—</option>${people.map((p) => `<option value="${p.id}" ${j.assigned_to === p.id ? "selected" : ""}>${esc(p.full_name || p.email)}</option>`).join("")}</select></div>
       </div>
-      ${j.id ? "" : `<div><label>Steps (one per line, in order)</label><textarea name="steps" style="min-height:170px">${DEFAULT_STEPS.join("\n")}</textarea>
+      ${j.id ? "" : `<div><label>Steps (one per line, in order)</label><textarea name="steps" style="min-height:170px">${(stdSteps.length ? stdSteps : DEFAULT_STEPS).join("\n")}</textarea>
         <p class="small muted" style="margin:4px 0 0">Use the same step names every time so the timing averages line up.</p></div>`}
       <div><label>Notes (everyone sees these, no prices)</label><textarea name="notes" style="min-height:70px">${esc(j.notes)}</textarea></div>
       ${seesMoney() ? `<div class="card stack" style="padding:10px"><div class="small muted">💲 Pricing (only you and Brittany see this)</div>
@@ -2081,6 +2090,7 @@ async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
     ...(OFFICE ? [] : [{ k: "hours", label: "My hours" }]),
+    ...(isOwner() ? [{ k: "processes", label: "Processes (names & order)" }] : []),
     ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "requests", label: "Time card edit requests" }, { k: "admininfo", label: "Admin info (passwords & logins)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
   const openReq = can("admin") ? (await sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open")).count ?? 0 : 0;
@@ -2092,10 +2102,57 @@ async function renderMore(root) {
   const open = async (k) => {
     root.querySelectorAll("[data-sec]").forEach((el) => (el.style.borderColor = el.dataset.sec === k ? "var(--accent)" : ""));
     sec.innerHTML = '<div class="empty">Loading…</div>';
-    await ({ account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, requests: renderTimecardRequests, admininfo: renderAdminInfo, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
+    await ({ processes: renderProcesses, account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, requests: renderTimecardRequests, admininfo: renderAdminInfo, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
   };
   root.querySelectorAll("[data-sec]").forEach((b) => (b.onclick = () => open(b.dataset.sec)));
   open(state.moreOpen || "account"); state.moreOpen = null;
+}
+
+// Owner: the standard process list new jobs start with. Renaming here renames it on every job too.
+async function renderProcesses(root) {
+  const { data } = await sb.from("process_names").select("*").order("position");
+  let list = data ?? [];
+  const { data: used } = await sb.from("job_steps").select("name");
+  const counts = {}; (used ?? []).forEach((r) => (counts[r.name] = (counts[r.name] ?? 0) + 1));
+  const extra = Object.keys(counts).filter((n) => !list.some((p) => p.name === n)).sort();
+  const save = async () => { for (const [i, p] of list.entries()) if (p.position !== i) { await sb.from("process_names").update({ position: i }).eq("name", p.name); p.position = i; } };
+  root.innerHTML = `<div class="card stack">
+    <h2 style="margin:0">Processes</h2>
+    <p class="small muted" style="margin:0">The standard steps every new job starts with, in order. Renaming one renames it on every job, so the time averages stay together. To change a single job, open it and press and hold a step.</p>
+    <div class="list">${list.map((p, i) => `<div class="item" style="cursor:default"><div class="row between" style="gap:6px">
+      <span class="title" style="flex:1;min-width:0">${i + 1}. ${esc(p.name)} <span class="small muted">${counts[p.name] ? `on ${counts[p.name]} job${counts[p.name] > 1 ? "s" : ""}` : "not used yet"}</span></span>
+      <span class="row" style="gap:4px">
+        <button class="btn icon sm" data-up="${i}" ${i === 0 ? "disabled" : ""} aria-label="Move up">↑</button>
+        <button class="btn icon sm" data-down="${i}" ${i === list.length - 1 ? "disabled" : ""} aria-label="Move down">↓</button>
+        <button class="btn icon sm" data-ren="${esc(p.name)}" aria-label="Rename">✎</button>
+        <button class="btn icon sm" data-del="${esc(p.name)}" aria-label="Remove from standard list">🗑</button></span></div></div>`).join("")}</div>
+    <form class="row" id="addp" style="gap:6px"><input name="name" placeholder="New process" required style="flex:1"><button class="btn">+ Add</button></form>
+    ${extra.length ? `<div><div class="small muted" style="margin-bottom:4px">Other names used on jobs (not in the standard list). Tap to rename everywhere:</div>
+      <div class="chips">${extra.map((n) => `<button class="chip" data-ren="${esc(n)}">${esc(n)} · ${counts[n]}</button>`).join("")}</div></div>` : ""}
+  </div>`;
+  const again = () => renderProcesses(root);
+  const move = async (i, d) => { [list[i], list[i + d]] = [list[i + d], list[i]]; await save(); again(); };
+  root.querySelectorAll("[data-up]").forEach((b) => (b.onclick = () => move(Number(b.dataset.up), -1)));
+  root.querySelectorAll("[data-down]").forEach((b) => (b.onclick = () => move(Number(b.dataset.down), 1)));
+  root.querySelectorAll("[data-ren]").forEach((b) => (b.onclick = async () => {
+    const old = b.dataset.ren;
+    const name = prompt(`Rename "${old}" on every job to:`, old)?.trim();
+    if (!name || name === old) return;
+    const { data: n, error } = await sb.rpc("rename_process", { p_old: old, p_new: name });
+    if (error) return toast(error.message);
+    toast(`Renamed. ${n} job step${n === 1 ? "" : "s"} updated.`); again();
+  }));
+  root.querySelectorAll("[data-del]").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Take "${b.dataset.del}" off the standard list? Jobs that already have it keep it.`)) return;
+    const { error } = await sb.from("process_names").delete().eq("name", b.dataset.del);
+    if (error) return toast(error.message); again();
+  }));
+  root.querySelector("#addp").onsubmit = async (e) => {
+    e.preventDefault();
+    const name = formData(e.target).name.trim(); if (!name) return;
+    const { error } = await sb.from("process_names").insert({ name, position: list.length });
+    if (error) return toast(error.message.includes("duplicate") ? "That one's already on the list." : error.message); again();
+  };
 }
 
 async function renderAccount(root) {
