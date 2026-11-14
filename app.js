@@ -1129,7 +1129,8 @@ async function renderInventory(root) {
     <div class="list" style="margin-top:12px">${list.map((i) => `
       <div class="item" data-id="${i.id}">
         <div class="row between">
-          <div style="min-width:0" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
+          ${photoSlot(i)}
+          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
             <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
           ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>${canInv() ? '<button class="btn sm" data-set>Count</button>' : ""}</div>` : !canInv() ? `<div class="qty"><span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
           <div class="qty">
@@ -1144,6 +1145,7 @@ async function renderInventory(root) {
   qEl.oninput = () => { invQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => { renderInventory(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { invCat = b.dataset.c; renderInventory(root); }));
   wireProductTabs(root);
+  wireSnaps(root, () => renderInventory(root));
   root.querySelector("#new")?.addEventListener("click", () => editItem());
   root.querySelector("#sync")?.addEventListener("click", async (e) => {
     e.target.disabled = true; e.target.textContent = "Syncing…";
@@ -1175,6 +1177,30 @@ async function renderInventory(root) {
   }));
 }
 
+// Photo slot on product rows: tap to take or pick a picture. Anyone signed in can add one.
+function photoSlot(i) {
+  return `<label class="pslot" title="${i.photo_url ? "Retake photo" : "Add photo"}" data-snapwrap>
+    ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="">` : "<span>📷</span>"}
+    <input type="file" accept="image/*" data-snap="${i.id}" style="display:none"></label>`;
+}
+function wireSnaps(root, rerender) {
+  root.querySelectorAll("[data-snapwrap]").forEach((l) => l.addEventListener("click", (e) => e.stopPropagation()));
+  root.querySelectorAll("[data-snap]").forEach((inp) => inp.addEventListener("change", async () => {
+    const file = inp.files?.[0]; if (!file) return;
+    const slot = inp.closest(".pslot"); slot.classList.add("busy");
+    try {
+      const blob = await shrinkImage(file, 1200);
+      const path = `products/${inp.dataset.snap}-${Date.now()}.jpg`;
+      const up = await sb.storage.from("supplies").upload(path, blob, { contentType: blob.type || "image/jpeg" });
+      if (up.error) throw up.error;
+      const url = sb.storage.from("supplies").getPublicUrl(path).data.publicUrl;
+      const { error } = await sb.rpc("set_supply_photo", { p_item: inp.dataset.snap, p_url: url });
+      if (error) throw error;
+      toast("Photo saved"); rerender();
+    } catch (err) { slot.classList.remove("busy"); toast("Photo didn't save: " + (err.message ?? err)); }
+  }));
+}
+
 function productTabs() {
   return `<div class="seg" style="margin-bottom:10px">${["Website", "Wholesale"].map((t) => `<button class="${invTab === t ? "active" : ""}" data-tab="${t}">${t === "Website" ? "WEBSITE INVENTORY" : "WHOLESALE"}</button>`).join("")}</div>`;
 }
@@ -1201,7 +1227,7 @@ async function renderWholesale(root) {
     ${Object.entries(groups).map(([cat, its]) => `<h2 class="section">${esc(cat)}</h2>
       <div class="list">${its.map((i) => `
         <div class="item hold" data-id="${i.id}"><div class="row between">
-          ${i.photo_url ? `<img src="${esc(i.photo_url)}" alt="" data-open="${i.id}" style="width:48px;height:48px;object-fit:cover;border-radius:8px;flex-shrink:0">` : ""}
+          ${photoSlot(i)}
           <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
             <div class="small muted">${[i.species, i.location, seesMoney() && i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
           <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
@@ -1209,6 +1235,7 @@ async function renderWholesale(root) {
             ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}</div>
         </div></div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No wholesale items yet. Tap + Item to add your random-pattern stock."}</div>`}`;
   wireTopbar(root); wireProductTabs(root);
+  wireSnaps(root, () => renderWholesale(root));
   const qEl = root.querySelector("#q");
   qEl.oninput = () => { whQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => renderWholesale(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }), 250); };
   const again = () => renderWholesale(root);
@@ -1499,7 +1526,8 @@ function supplyActions(i, vendors, done) {
 
 // Phone photos are huge; shrink to a reasonable JPEG before uploading.
 async function shrinkImage(file, max) {
-  const img = await createImageBitmap(file);
+  let img;
+  try { img = await createImageBitmap(file); } catch { return file; }
   const scale = Math.min(1, max / Math.max(img.width, img.height));
   const c = document.createElement("canvas"); c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
   c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
