@@ -918,9 +918,11 @@ async function viewJob(j, done) {
     <h3 class="section" style="margin-bottom:4px">Job notes</h3>
     <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
     ${(timers ?? []).length ? `<details class="section"><summary class="small">Time log (${timers.length})</summary>
-      <table style="margin-top:6px"><tr><th>Who</th><th>Step</th><th>Time</th><th>Pcs</th></tr>${timers.map((t) => `<tr>
+      ${can("admin") ? '<p class="small muted" style="margin:6px 0 0">Tap a line to fix the time, pieces or step.</p>' : ""}
+      <table style="margin-top:6px"><tr><th>Who</th><th>Step</th><th>When</th><th>Time</th><th>Pcs</th></tr>${timers.map((t) => `<tr ${can("admin") ? `data-tedit="${t.id}" style="cursor:pointer"` : ""}>
         <td>${esc(nameOf(t.user_id))}</td><td>${esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "")}</td>
-        <td>${t.ended_at ? fmtMin(mins(t)) : '<span class="badge ok">Running</span>'}</td><td>${t.pieces ?? ""}</td></tr>`).join("")}</table></details>` : ""}
+        <td class="small">${fmtDate(t.started_at.slice(0, 10))} ${timeOf(t.started_at)}</td>
+        <td>${t.ended_at ? fmtMin(mins(t)) : '<span class="badge ok">Running</span>'}</td><td>${t.pieces ?? ""}${can("admin") ? ' <span class="muted">✎</span>' : ""}</td></tr>`).join("")}</table></details>` : ""}
     <div class="row wrap" style="margin-top:14px">
       ${can("lead") ? '<button class="btn" id="edit">Edit job</button>' : ""}
       ${can("lead") && j.status !== "Complete" ? '<button class="btn primary" id="complete">Mark complete</button>' : ""}
@@ -982,6 +984,64 @@ async function viewJob(j, done) {
     root.querySelector("#reopen")?.addEventListener("click", async () => {
       await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();
     });
+    root.querySelectorAll("[data-tedit]").forEach((r) => (r.onclick = () => {
+      const t = timers.find((x) => x.id === r.dataset.tedit);
+      editTimer(t, steps ?? [], () => { close(); reopenJob(j.id, done); });
+    }));
+  });
+}
+
+// Admins: fix a process timer someone got wrong (times, pieces, step) or delete it.
+// Piece counts on the steps move with the change so job progress stays right.
+function editTimer(t, steps, after) {
+  const local = (iso) => { if (!iso) return ""; const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+  sheet(`<form class="stack" id="tf">
+    <h2>Fix time: ${esc(nameOf(t.user_id))}</h2>
+    <div><label>Step</label><select name="step_id">${steps.map((s) => `<option value="${s.id}" ${s.id === t.step_id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
+    <div class="grid2">
+      <div><label>Started</label><input type="datetime-local" name="started_at" value="${local(t.started_at)}" required></div>
+      <div><label>Stopped</label><input type="datetime-local" name="ended_at" value="${local(t.ended_at)}"></div>
+    </div>
+    <div class="grid2">
+      <div><label>Pieces</label><input type="number" min="0" step="1" name="pieces" value="${t.pieces ?? ""}"></div>
+      <div><label>Note</label><input name="note" value="${esc(t.note ?? "")}"></div>
+    </div>
+    <p class="small muted" style="margin:0">Leave "Stopped" empty only if the timer is still running.</p>
+    <div class="row between"><button type="button" class="btn danger" id="tdel">Delete</button>
+      <span class="row" style="gap:6px"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary">Save</button></span></div>
+  </form>`, (root, close) => {
+    const fixCounts = async (stepId, delta) => {
+      if (!delta) return;
+      const s = steps.find((x) => x.id === stepId); if (!s) return;
+      const next = Math.max(0, Number(s.done_qty) + delta);
+      await sb.from("job_steps").update({ done_qty: next }).eq("id", stepId);
+      s.done_qty = next;
+    };
+    root.querySelector("#tf").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const start = new Date(f.started_at), end = f.ended_at ? new Date(f.ended_at) : null;
+      if (end && end <= start) return toast("Stopped has to be after started.");
+      if (end && end - start > 16 * 36e5) return toast("That's over 16 hours. Check the times.");
+      const pieces = f.pieces === "" ? null : Math.max(0, Math.round(Number(f.pieces)));
+      const { error } = await sb.from("job_timers").update({
+        step_id: f.step_id, started_at: start.toISOString(), ended_at: end ? end.toISOString() : null, pieces, note: f.note || null,
+      }).eq("id", t.id);
+      if (error) return toast(error.message);
+      // Move the piece count: take the old pieces off the old step, add the new pieces to the new step.
+      if (t.step_id === f.step_id) await fixCounts(f.step_id, (pieces ?? 0) - (t.pieces ?? 0));
+      else { await fixCounts(t.step_id, -(t.pieces ?? 0)); await fixCounts(f.step_id, pieces ?? 0); }
+      log("edit_timer", "job_timer", t.id, { from: { start: t.started_at, end: t.ended_at, pieces: t.pieces, step: t.step_id }, to: { start: start.toISOString(), end: end?.toISOString() ?? null, pieces, step: f.step_id } });
+      toast("Time fixed"); close(); after?.();
+    };
+    root.querySelector("#tdel").onclick = async () => {
+      if (!confirm(`Delete this time entry for ${nameOf(t.user_id)}? Its ${t.pieces ?? 0} pieces come off the step too.`)) return;
+      const { error } = await sb.from("job_timers").delete().eq("id", t.id);
+      if (error) return toast(error.message);
+      await fixCounts(t.step_id, -(t.pieces ?? 0));
+      log("delete_timer", "job_timer", t.id, { start: t.started_at, end: t.ended_at, pieces: t.pieces });
+      toast("Deleted"); close(); after?.();
+    };
   });
 }
 
