@@ -112,6 +112,21 @@ const I = {
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
 
+// ---------------------------------------------------------------- office mode
+// Office desktops: open the app once with ?office (or office.html). That computer stays in office mode:
+// no time clock, no job timers, no personal hours. It stays signed in until someone signs out.
+const OFFICE = (() => {
+  try {
+    const q = new URLSearchParams(location.search);
+    if (q.has("office")) {
+      if (q.get("office") === "0") localStorage.removeItem("mb_office"); else localStorage.setItem("mb_office", "1");
+      history.replaceState(null, "", location.pathname + location.hash);
+    }
+    return localStorage.getItem("mb_office") === "1";
+  } catch { return false; }
+})();
+if (OFFICE) document.documentElement.classList.add("office");
+
 // ---------------------------------------------------------------- state & routing
 const state = { session: null, profile: null, view: "home", cache: {}, chat: [] };
 
@@ -228,7 +243,7 @@ function renderShell() {
   $app.innerHTML = `
   <div class="shell">
     <nav class="sidebar wood">${logoImg("logo")}${nav("sidebar")}<div class="spacer"></div>
-      <div class="small who">${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
+      <div class="small who">${OFFICE ? "🖥 Office computer<br>" : ""}${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
     <main class="main" id="view"><div class="empty">Loading…</div></main>
     <nav class="tabbar">${Object.entries(VIEWS).filter(([k]) => k !== "more").map(([k, v]) =>
       `<button data-go="${k}" class="${state.view === k ? "active" : ""}">${v.icon}<span>${v.label}</span></button>`).join("")}</nav>
@@ -267,7 +282,7 @@ async function renderHome(root) {
   const first = (state.profile.full_name || "").split(" ")[0];
   const hour = Number(new Date().toLocaleString("en-US", { timeZone: "America/Denver", hour: "numeric", hour12: false }));
   const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const myJobs = (jobs.data ?? []).filter((j) => j.assigned_to === state.profile.id);
+  const myJobs = OFFICE ? (jobs.data ?? []).filter((j) => j.status === "Active") : (jobs.data ?? []).filter((j) => j.assigned_to === state.profile.id);
   const dueSoon = (jobs.data ?? []).filter((j) => j.due_date && daysUntil(j.due_date) <= 7);
 
   root.innerHTML = `
@@ -275,15 +290,15 @@ async function renderHome(root) {
       ${can("admin") ? '<div class="hero-actions"><button class="btn sm acct" id="addAnn" style="position:static">+ Note</button></div>' : ""}
       <button class="btn icon sm acct" data-go-more aria-label="Account">${I.more.replace("<svg", '<svg width="20" height="20"')}</button>
       ${logoImg("logo")}
-      <div class="greet">${greet}${first ? ", " + esc(first) : ""}</div>
+      <div class="greet">${greet}${first && !OFFICE ? ", " + esc(first) : ""}</div>
       <div class="rule"></div>
       <p class="saying">${esc(sayingFor())}</p>
       ${MTNS}
     </section>
-    <div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
-    <div id="mytimer" class="section"></div>
+    ${OFFICE ? "" : `<div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
+    <div id="mytimer" class="section"></div>`}
     <div id="reqalert"></div>
-    ${state.profile.extra_clock ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
+    ${state.profile.extra_clock && !OFFICE ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
     <div class="stack section">
       ${(ann.data ?? []).map((a) => `
         <div class="card">
@@ -295,18 +310,18 @@ async function renderHome(root) {
     </div>
 
     <div class="grid2 section">
-      <div class="card"><div class="row between"><h2>My jobs</h2><span class="badge">${myJobs.length}</span></div>
-        ${jobRows(myJobs) || '<p class="muted small">Nothing assigned to you.</p>'}</div>
+      <div class="card"><div class="row between"><h2>${OFFICE ? "Active jobs" : "My jobs"}</h2><span class="badge">${myJobs.length}</span></div>
+        ${jobRows(myJobs) || `<p class="muted small">${OFFICE ? "No active jobs." : "Nothing assigned to you."}</p>`}</div>
       <div class="card"><div class="row between"><h2>Due this week</h2><span class="badge ${dueSoon.some((j) => daysUntil(j.due_date) < 0) ? "bad" : ""}">${dueSoon.length}</span></div>
         ${jobRows(dueSoon) || '<p class="muted small">Nothing due in the next 7 days.</p>'}</div>
     </div>`;
   wireTopbar(root);
-  renderClock(root.querySelector("#clock"));
-  if (state.profile.extra_clock) renderExtraClock(root.querySelector("#xclock"));
+  if (!OFFICE) renderClock(root.querySelector("#clock"));
+  if (state.profile.extra_clock && !OFFICE) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob((jobs.data ?? []).find((j) => j.id === b.dataset.job), () => renderShell())));
-  renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
+  if (!OFFICE) renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
   if (can("admin")) sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open").then(({ count }) => {
     const el = root.querySelector("#reqalert"); if (!el || !count) return;
     el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
@@ -909,7 +924,7 @@ async function viewJob(j, done) {
         <div class="row between" style="gap:6px;flex-wrap:wrap">
           <span class="small muted">This job: ${fmtMin(stepMin(st.id))}${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} per 10 pcs` : ""}</span>
           <span class="row" style="gap:6px">
-            ${j.status !== "Complete" ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button><button class="btn sm" data-cancelt>Cancel</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
+            ${j.status !== "Complete" && !OFFICE ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button><button class="btn sm" data-cancelt>Cancel</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
             <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
             ${can("lead") && j.status !== "Complete" ? `<button class="btn icon sm" data-fix="${st.id}" aria-label="Adjust count">✎</button>` : ""}
           </span></div>
@@ -1978,7 +1993,7 @@ async function renderAsk(root) {
 async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
-    { k: "hours", label: "My hours" },
+    ...(OFFICE ? [] : [{ k: "hours", label: "My hours" }]),
     ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "requests", label: "Time card edit requests" }, { k: "admininfo", label: "Admin info (passwords & logins)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
   const openReq = can("admin") ? (await sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open")).count ?? 0 : 0;
@@ -2001,11 +2016,14 @@ async function renderAccount(root) {
   root.innerHTML = `<div class="card stack">
     <div><div class="title" style="font-weight:700">${esc(p.full_name || p.email)}</div>
       <div class="small muted">${esc(p.email)} · ${ROLE_LABEL[p.role]}${p.title ? " · " + esc(p.title) : ""}</div></div>
-    <div class="row wrap"><button class="btn" id="pw">Change password</button><button class="btn" id="out">Sign out</button></div>
+    <div class="row wrap"><button class="btn" id="pw">Change password</button><button class="btn" id="out">Sign out</button>
+      ${OFFICE ? '<button class="btn" id="leaveoffice">Turn off office mode</button>' : ""}</div>
+    ${OFFICE ? '<p class="small muted" style="margin:0">This computer is in office mode: no time clock or job timers. It stays signed in until someone taps Sign out.</p>' : ""}
     <p class="small muted" style="margin:0">To install: on iPhone, tap Share → Add to Home Screen. On Android or desktop Chrome, use the install icon in the address bar.</p>
   </div>`;
   root.querySelector("#pw").onclick = () => renderChangePassword(false);
   root.querySelector("#out").onclick = () => sb.auth.signOut();
+  root.querySelector("#leaveoffice")?.addEventListener("click", () => { location.href = location.pathname + "?office=0"; });
 }
 
 // Week starts Monday, shop time
