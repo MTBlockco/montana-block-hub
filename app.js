@@ -1881,7 +1881,7 @@ async function renderSops(root) {
   const groups = {};
   list.forEach((s) => (groups[s.category] ??= []).push(s));
   root.innerHTML = `
-    ${topbar("SOPs", can("admin") ? '<button class="btn sm primary" id="new">+ SOP</button>' : "")}
+    ${topbar("SOPs", isOwner() ? '<button class="btn sm primary" id="new">+ SOP</button>' : "")}
     <input id="q" placeholder="Search procedures…" value="${esc(sopQ)}" style="margin-bottom:6px">
     ${Object.entries(groups).map(([cat, items]) => `
       <h2 class="section">${esc(cat)}</h2>
@@ -1910,14 +1910,14 @@ async function viewSop(s) {
   log("view_sop", "sop", s.id, { title: s.title });
   s = { ...s, photos: await sopPhotoUrls(s.photos) };
   sheet(`
-    <div class="row between"><span class="badge">${esc(s.category)}</span><button class="btn sm" data-close>Close</button></div>
+    <div class="row between"><span class="badge">${esc(s.category)}</span><span class="row" style="gap:6px">${isOwner() ? '<button class="btn sm primary" id="edit">✎ Edit</button>' : ""}<button class="btn sm" data-close>Close</button></span></div>
     <h1 style="margin-top:10px">${esc(s.title)}</h1>
     <div class="prose">${md(s.body)}</div>
     ${(s.photos ?? []).length ? `<h2 class="section">Photos &amp; diagrams</h2>
       <div class="sop-photos">${s.photos.map((p, n) => `<figure data-ph="${n}"><img src="${esc(p.url)}" alt="${esc(p.caption || s.title)}" loading="lazy">${p.caption ? `<figcaption>${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>` : ""}
-    ${can("admin") ? '<div class="row" style="margin-top:14px"><button class="btn" id="edit">Edit</button></div>' : ""}`,
+    ${isOwner() ? '<div class="row" style="margin-top:14px"><button class="btn" id="edit2">✎ Edit this SOP</button></div>' : ""}`,
   (root, close) => {
-    root.querySelector("#edit")?.addEventListener("click", () => { close(); editSop(s); });
+    ["#edit", "#edit2"].forEach((id) => root.querySelector(id)?.addEventListener("click", () => { close(); editSop(s); }));
     root.querySelectorAll("[data-ph]").forEach((f) => (f.onclick = () => photoViewer(s.photos[Number(f.dataset.ph)], s.photos)));
   });
 }
