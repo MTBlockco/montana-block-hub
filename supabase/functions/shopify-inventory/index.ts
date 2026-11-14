@@ -47,17 +47,20 @@ const category = (title: string) =>
 
 async function sync(service: ReturnType<typeof createClient>) {
   const rows: Record<string, unknown>[] = [];
+  const images = new Map<string, string>(); // variant id -> website photo
   let after: string | null = null;
   do {
     const data = await gql(`query($after: String) {
       productVariants(first: 100, after: $after, query: "product_status:active") {
         pageInfo { hasNextPage endCursor }
-        nodes { id sku title inventoryItem { id tracked inventoryLevel(locationId: "${LOCATION}") { quantities(names: ["available"]) { quantity } } } product { title } }
+        nodes { id sku title media(first: 1) { nodes { preview { image { url } } } } inventoryItem { id tracked inventoryLevel(locationId: "${LOCATION}") { quantities(names: ["available"]) { quantity } } } product { title featuredMedia { preview { image { url } } } } }
       } }`, { after });
     const pv = data.productVariants;
     for (const v of pv.nodes) {
       if (!v.inventoryItem?.tracked) continue;
       const qty = v.inventoryItem.inventoryLevel?.quantities?.[0]?.quantity ?? 0;
+      const img = v.media?.nodes?.[0]?.preview?.image?.url ?? v.product.featuredMedia?.preview?.image?.url;
+      if (img) images.set(v.id, img + (img.includes("?") ? "&" : "?") + "width=600");
       rows.push({
         shopify_variant_id: v.id,
         shopify_inventory_item_id: v.inventoryItem.id,
@@ -79,6 +82,11 @@ async function sync(service: ReturnType<typeof createClient>) {
   for (const r of rows) if (known.has(r.shopify_variant_id as string)) r.category = known.get(r.shopify_variant_id as string);
   const { error } = await service.from("inventory_items").upsert(rows, { onConflict: "shopify_variant_id" });
   if (error) throw new Error(error.message);
+
+  // Website photo for items that don't have one yet. A photo someone took in the hub is never replaced.
+  const { data: noPhoto } = await service.from("inventory_items").select("shopify_variant_id").eq("source", "shopify").is("photo_url", null);
+  await Promise.all((noPhoto ?? []).filter((r) => images.has(r.shopify_variant_id)).map((r) =>
+    service.from("inventory_items").update({ photo_url: images.get(r.shopify_variant_id) }).eq("shopify_variant_id", r.shopify_variant_id).is("photo_url", null)));
 
   const keep = new Set(rows.map((r) => r.shopify_variant_id));
   const stale = (existing ?? []).map((r) => r.shopify_variant_id).filter((id) => !keep.has(id));
