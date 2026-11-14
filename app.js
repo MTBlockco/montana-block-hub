@@ -819,15 +819,30 @@ function stopTimer(t, after) {
     <form class="stack" id="f">
       <h2>Stop timer</h2>
       <p class="small muted" style="margin:0">${esc(t.job_steps?.name ?? "")} · ${esc(t.jobs?.title ?? "")} · ${hm(Date.now() - new Date(t.started_at))}</p>
-      <div><label>How many pieces did you finish on this step?</label><input name="pieces" type="number" min="0" step="1" inputmode="numeric" required autofocus></div>
+      <div class="grid2">
+        <div><label>How many pieces did you finish on this step?</label><input name="pieces" type="number" min="0" step="1" inputmode="numeric" required autofocus></div>
+        <div><label>How many men worked it (you included)?</label><input name="crew" type="number" min="1" max="10" step="1" inputmode="numeric" value="1" required></div>
+      </div>
+      <p class="small muted" id="math" style="margin:0"></p>
       <div><label>Note (optional)</label><input name="note" placeholder="Interrupted, machine down, extra defects…"></div>
       <div class="row wrap"><button class="btn primary">Save time</button><button type="button" class="btn" data-close>Keep timing</button><button type="button" class="btn danger" id="cancelt">Cancel timer</button></div>
     </form>`, (root, close) => {
     root.querySelector("#cancelt").onclick = () => { close(); cancelTimer(t, after); };
+    // Labor = clock time x men. Shown so the guy sees what gets recorded.
+    const clockMin = (Date.now() - new Date(t.started_at)) / 60000;
+    const pp = (m) => (m < 1 ? `${Math.round(m * 60)} sec` : m < 10 ? `${m.toFixed(1)} min` : fmtMin(m));
+    const showMath = () => {
+      const f = formData(root.querySelector("#f")), pcs = Number(f.pieces), men = Math.max(1, Math.round(Number(f.crew) || 1));
+      const labor = clockMin * men;
+      root.querySelector("#math").textContent = pcs > 0
+        ? `${fmtMin(clockMin)} on the clock × ${men} ${men > 1 ? "men" : "man"} = ${fmtMin(labor)} of labor → ${pp(labor / pcs)} labor per piece${men > 1 ? ` (${pp(clockMin / pcs)} on the clock)` : ""}.`
+        : "";
+    };
+    root.querySelectorAll("input[name=pieces], input[name=crew]").forEach((i) => (i.oninput = showMath));
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target);
-      const { error } = await sb.rpc("job_timer_stop", { p_pieces: Number(f.pieces), p_note: f.note || null });
+      const { error } = await sb.rpc("job_timer_stop", { p_pieces: Number(f.pieces), p_note: f.note || null, p_crew: Math.max(1, Math.round(Number(f.crew) || 1)) });
       if (error) return toast(error.message);
       toast(`Logged ${f.pieces} piece${f.pieces === "1" ? "" : "s"}. Nice work.`);
       close(); after?.();
@@ -893,8 +908,9 @@ async function viewJob(j, done) {
   const statFor = (name) => (stats ?? []).find((x) => x.step === name);
   const mine = (timers ?? []).find((t) => t.user_id === state.profile.id && !t.ended_at);
   const mins = (t) => ((t.ended_at ? new Date(t.ended_at) : new Date()) - new Date(t.started_at)) / 60000;
-  const stepMin = (id) => (timers ?? []).filter((t) => t.step_id === id).reduce((a, t) => a + mins(t), 0);
-  const totalMin = (timers ?? []).reduce((a, t) => a + mins(t), 0);
+  const labor = (t) => mins(t) * (t.crew ?? 1); // man-minutes
+  const stepMin = (id) => (timers ?? []).filter((t) => t.step_id === id).reduce((a, t) => a + labor(t), 0);
+  const totalMin = (timers ?? []).reduce((a, t) => a + labor(t), 0);
   const running = (timers ?? []).filter((t) => !t.ended_at);
   const pct = jobProgress(j, steps ?? []);
   sheet(`
@@ -914,7 +930,7 @@ async function viewJob(j, done) {
     </div>
     <div id="jobmat"></div>
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
-    <div class="row between small muted"><span>${pct}% done</span><span>Total time logged: ${fmtMin(totalMin)}</span></div>
+    <div class="row between small muted"><span>${pct}% done</span><span>Total labor logged: ${fmtMin(totalMin)}</span></div>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
     <div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">Steps</h3>${isOwner() ? '<button class="btn sm" id="arrange">Arrange steps</button>' : ""}</div>
     ${isOwner() ? '<p class="small muted" style="margin:0 0 6px">Press and hold a step to rename, move or remove it.</p>' : ""}
@@ -924,7 +940,7 @@ async function viewJob(j, done) {
         <div class="row between"><span class="title">${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
         <div class="progress thin" style="margin:6px 0"><span style="width:${Math.min(100, Math.round(st.done_qty / j.quantity * 100))}%"></span></div>
         <div class="row between" style="gap:6px;flex-wrap:wrap">
-          <span class="small muted">This job: ${fmtMin(stepMin(st.id))}${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} per 10 pcs` : ""}</span>
+          <span class="small muted">This job: ${fmtMin(stepMin(st.id))} labor${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} labor per 10 pcs` : ""}</span>
           <span class="row" style="gap:6px">
             ${j.status !== "Complete" && !OFFICE ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button><button class="btn sm" data-cancelt>Cancel</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
             <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
@@ -936,10 +952,10 @@ async function viewJob(j, done) {
     <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
     ${(timers ?? []).length ? `<details class="section"><summary class="small">Time log (${timers.length})</summary>
       ${can("admin") ? '<p class="small muted" style="margin:6px 0 0">Tap a line to fix the time, pieces or step.</p>' : ""}
-      <table style="margin-top:6px"><tr><th>Who</th><th>Step</th><th>When</th><th>Time</th><th>Pcs</th></tr>${timers.map((t) => `<tr ${can("admin") ? `data-tedit="${t.id}" style="cursor:pointer"` : ""}>
+      <table style="margin-top:6px"><tr><th>Who</th><th>Step</th><th>When</th><th>Time</th><th>Men</th><th>Pcs</th></tr>${timers.map((t) => `<tr ${can("admin") ? `data-tedit="${t.id}" style="cursor:pointer"` : ""}>
         <td>${esc(nameOf(t.user_id))}</td><td>${esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "")}</td>
         <td class="small">${fmtDate(t.started_at.slice(0, 10))} ${timeOf(t.started_at)}</td>
-        <td>${t.ended_at ? fmtMin(mins(t)) : '<span class="badge ok">Running</span>'}</td><td>${t.pieces ?? ""}${can("admin") ? ' <span class="muted">✎</span>' : ""}</td></tr>`).join("")}</table></details>` : ""}
+        <td>${t.ended_at ? fmtMin(mins(t)) : '<span class="badge ok">Running</span>'}</td><td>${t.crew ?? 1}</td><td>${t.pieces ?? ""}${can("admin") ? ' <span class="muted">✎</span>' : ""}</td></tr>`).join("")}</table></details>` : ""}
     <div class="row wrap" style="margin-top:14px">
       ${can("lead") ? '<button class="btn" id="edit">Edit job</button>' : ""}
       ${can("lead") && j.status !== "Complete" ? '<button class="btn primary" id="complete">Mark complete</button>' : ""}
@@ -1088,6 +1104,7 @@ function editTimer(t, steps, after) {
     </div>
     <div class="grid2">
       <div><label>Pieces</label><input type="number" min="0" step="1" name="pieces" value="${t.pieces ?? ""}"></div>
+      <div><label>Men on it</label><input type="number" min="1" max="10" step="1" name="crew" value="${t.crew ?? 1}" required></div>
       <div><label>Note</label><input name="note" value="${esc(t.note ?? "")}"></div>
     </div>
     <p class="small muted" style="margin:0">Leave "Stopped" empty only if the timer is still running.</p>
@@ -1110,6 +1127,7 @@ function editTimer(t, steps, after) {
       const pieces = f.pieces === "" ? null : Math.max(0, Math.round(Number(f.pieces)));
       const { error } = await sb.from("job_timers").update({
         step_id: f.step_id, started_at: start.toISOString(), ended_at: end ? end.toISOString() : null, pieces, note: f.note || null,
+        crew: Math.min(10, Math.max(1, Math.round(Number(f.crew) || 1))),
       }).eq("id", t.id);
       if (error) return toast(error.message);
       // Move the piece count: take the old pieces off the old step, add the new pieces to the new step.
