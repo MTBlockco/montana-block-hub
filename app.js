@@ -389,10 +389,32 @@ async function keepAwake() { try { if (!wakeLock && navigator.wakeLock) { wakeLo
 function releaseWake() { try { wakeLock?.release(); } catch {} wakeLock = null; }
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.laser) keepAwake(); });
 
+// Push alerts reach the phone even when it's locked. Needs permission once; on iPhone the app must be on the Home Screen.
+const VAPID_PUBLIC = "BMEYszqU5K3_1AiH6hmRHYgGHl6lAdLPGl7Jh9BTBmvsHSgdr8oIi3pEf4qtIv4maGRGMU-SImCJX42U6Wd9IMw";
+async function enablePush() {
+  try {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
+    const perm = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+    if (perm !== "granted") return "denied";
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      const raw = atob(VAPID_PUBLIC.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (VAPID_PUBLIC.length % 4)) % 4));
+      sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0)) });
+    }
+    const k = sub.toJSON().keys;
+    const { error } = await sb.from("push_subscriptions").upsert({ endpoint: sub.endpoint, user_id: state.profile.id, p256dh: k.p256dh, auth: k.auth });
+    return error ? "error" : "ok";
+  } catch (e) { console.error(e); return "error"; }
+}
+const pushHelp = (r) => r === "unsupported"
+  ? (/iPhone|iPad/.test(navigator.userAgent) ? "To get laser alerts on a locked iPhone, add the app to the Home Screen (Share → Add to Home Screen) and open it from there." : "This browser can't do lock-screen alerts.")
+  : r === "denied" ? "Notifications are blocked for this app. Turn them on in the phone's settings to get alerts on a locked phone." : r === "error" ? "Couldn't turn on lock-screen alerts. Keep the app open." : "";
+
 async function laserStartRun(program, j, step) {
   laserAudio ??= (() => { try { return new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } })(); // unlock sound on this tap
   try { laserAudio?.resume?.(); } catch {}
-  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch {}
+  enablePush().then((r) => { if (r !== "ok") toast(pushHelp(r)); });
   const { data, error } = await sb.from("laser_runs").insert({ program_id: program.id, job_id: j?.id ?? null, step_id: step?.id ?? null, planned_seconds: program.run_seconds })
     .select("*, laser_programs(*), jobs(title), job_steps(name)").single();
   if (error) return toast(error.message);
@@ -440,7 +462,7 @@ async function laserSheet(j, step, after) {
       <div class="card" id="lpinfo" style="padding:10px"></div>
       <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
     : `<p class="muted">No laser programs yet. Add the first one: how long a run takes and how many pieces it does.</p><button class="btn primary" id="lpnew">+ New program</button>`}
-    <p class="small muted" style="margin:0">Keep the app open on this phone while the laser runs. It keeps the screen on and beeps when the run should be done. Tap <strong>Reloaded</strong> when you put the next batch in.</p>
+    <p class="small muted" style="margin:0">When the run time is up you get an alert on this phone, even locked, and it repeats every 1½ minutes until you tap <strong>Reloaded</strong> or <strong>Done</strong>. If the app is open it also beeps.</p>
   </div>`, (root, close) => {
     const sel = root.querySelector("#lp");
     const cur = () => list.find((p) => p.id === sel?.value);

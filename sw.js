@@ -1,6 +1,6 @@
 // Service worker: makes the hub installable and keeps the app shell available offline.
 // Data always comes live from the server; only the static files are cached.
-const CACHE = "mb-hub-v36";
+const CACHE = "mb-hub-v37";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "sayings.js", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -28,4 +28,22 @@ self.addEventListener("fetch", (e) => {
       })
       .catch(() => caches.match(e.request))
   );
+});
+
+// Laser alerts: shown even when the phone is locked or the app is closed.
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch { d = { title: "Montana Block Hub", body: e.data?.text() }; }
+  e.waitUntil(self.registration.showNotification(d.title || "Montana Block Hub", {
+    body: d.body || "", tag: d.tag || "hub", renotify: true, requireInteraction: true,
+    vibrate: [400, 200, 400, 200, 800], icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: d.url || "./" },
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || "./", self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+    const w = list.find((c) => c.url.startsWith(self.registration.scope));
+    return w ? w.focus() : self.clients.openWindow(url);
+  }));
 });
