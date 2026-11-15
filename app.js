@@ -1164,10 +1164,13 @@ async function viewJob(j, done) {
   const pct = jobProgress(j, steps ?? []);
   sheet(`
     <div class="row between"><span class="badge ${j.status === "Complete" ? "ok" : ""}">${j.status === "Complete" ? "Complete" : "Active"}</span><button class="btn sm" data-close>Close</button></div>
-    <h2 style="margin:10px 0 2px">${esc(j.title)}</h2>
-    <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", ].filter(Boolean).map(esc).join(" · ")}</p>
-    <div class="row between" style="margin-top:4px">${peopleLine(j) || '<span class="small muted">👤 Not assigned</span>'}${can("lead") ? '<button class="btn sm" id="assign">Assign</button>' : ""}</div>
-    ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
+    <h1 class="jv-title">${esc(j.title)}</h1>
+    <div class="jv-pcs">${j.quantity} pieces</div>
+    ${j.due_date ? `<div class="jv-due"><span class="badge ${daysUntil(j.due_date) < 0 ? "bad" : daysUntil(j.due_date) <= 2 ? "warn" : ""}">Due ${fmtDate(j.due_date)}</span></div>` : ""}
+    <div class="row between jv-people">${peopleLine(j) || '<span class="muted">👤 Not assigned</span>'}${can("lead") ? '<button class="btn sm" id="assign">Assign</button>' : ""}</div>
+    ${j.product || j.customer || j.channel || j.notes ? `<details class="jv-more"><summary class="small muted">More info</summary>
+      <p class="small muted" style="margin:4px 0 0">${[j.product, j.customer, j.channel].filter(Boolean).map(esc).join(" · ")}</p>
+      ${j.notes ? `<p class="small" style="white-space:pre-wrap;margin:4px 0 0">${esc(j.notes)}</p>` : ""}</details>` : ""}
     ${money ? `<details class="card" style="margin:8px 0;padding:10px"><summary class="small muted" style="cursor:pointer">💲 Pricing &amp; PO <span class="muted">(admin only)</span>${money.billed_at ? ' <span class="badge ok">Billed</span>' : j.shipped_qty != null ? ' <span class="badge warn">Ready to bill</span>' : ""}</summary>
       <div style="margin-top:6px"><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
       ${j.shipped_qty != null && money.unit_price != null ? `<div style="margin-top:4px">Bill for sent: <strong>${usd(j.shipped_qty * money.unit_price)}</strong> <span class="small muted">(${j.shipped_qty} × ${usd(money.unit_price)})</span></div>` : ""}

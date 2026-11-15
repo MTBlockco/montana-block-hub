@@ -278,3 +278,12 @@ details.stepdone > summary, details.stepsdone > summary { list-style: none; curs
 details.stepdone > summary::-webkit-details-marker, details.stepsdone > summary::-webkit-details-marker { display: none; }
 details.stepdone[open] { opacity: 1; }
 details.stepsdone > summary { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
+
+.jv-title { font-size: 1.7rem; line-height: 1.15; margin: 10px 0 6px; }
+.jv-pcs { display: inline-block; font-size: 1.25rem; font-weight: 700; color: #fff; text-decoration: underline; text-underline-offset: 4px;
+  background: var(--walnut-2); padding: 3px 12px; border-radius: 8px; }
+.jv-due { margin-top: 6px; }
+.jv-people { margin-top: 6px; font-size: .78rem; }
+.jv-people .assignees { font-weight: 600; }
+.jv-more { margin-top: 6px; }
+.jv-more > summary { cursor: pointer; }
