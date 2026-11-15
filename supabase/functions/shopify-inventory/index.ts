@@ -48,6 +48,10 @@ const category = (title: string) =>
 async function sync(service: ReturnType<typeof createClient>) {
   const rows: Record<string, unknown>[] = [];
   const images = new Map<string, string>(); // variant id -> website photo
+  // Wholesale items linked to their "Wholesale - ..." Shopify product: only their count comes over; they stay in the WHOLESALE tab.
+  const { data: whRows } = await service.from("inventory_items").select("shopify_variant_id").eq("source", "wholesale").not("shopify_variant_id", "is", null);
+  const wholesaleIds = new Set((whRows ?? []).map((r) => r.shopify_variant_id));
+  const whCounts: { id: string; qty: number }[] = [];
   let after: string | null = null;
   do {
     const data = await gql(`query($after: String) {
@@ -59,6 +63,8 @@ async function sync(service: ReturnType<typeof createClient>) {
     for (const v of pv.nodes) {
       if (!v.inventoryItem?.tracked) continue;
       const qty = v.inventoryItem.inventoryLevel?.quantities?.[0]?.quantity ?? 0;
+      if (wholesaleIds.has(v.id)) { whCounts.push({ id: v.id, qty }); continue; }
+      if (/^wholesale\b/i.test(v.product.title)) continue; // never pull an unlinked wholesale listing into website products
       const img = v.media?.nodes?.[0]?.preview?.image?.url ?? v.product.featuredMedia?.preview?.image?.url;
       if (img) images.set(v.id, img + (img.includes("?") ? "&" : "?") + "width=600");
       rows.push({
@@ -88,10 +94,13 @@ async function sync(service: ReturnType<typeof createClient>) {
   await Promise.all((noPhoto ?? []).filter((r) => images.has(r.shopify_variant_id)).map((r) =>
     service.from("inventory_items").update({ photo_url: images.get(r.shopify_variant_id) }).eq("shopify_variant_id", r.shopify_variant_id).is("photo_url", null)));
 
+  await Promise.all(whCounts.map((w) => service.from("inventory_items").update({ quantity: w.qty, synced_at: new Date().toISOString() })
+    .eq("shopify_variant_id", w.id).eq("source", "wholesale")));
+
   const keep = new Set(rows.map((r) => r.shopify_variant_id));
   const stale = (existing ?? []).map((r) => r.shopify_variant_id).filter((id) => !keep.has(id));
   if (stale.length) await service.from("inventory_items").delete().in("shopify_variant_id", stale);
-  return { synced: rows.length, removed: stale.length };
+  return { synced: rows.length, removed: stale.length, wholesale: whCounts.length };
 }
 
 // Unfulfilled orders, line by line, for the Jobs > SHOPIFY / WHOLESALE tabs. No prices are returned.
@@ -165,7 +174,7 @@ Deno.serve(async (req) => {
       const next = Math.round(Number(body.quantity));
       if (!Number.isFinite(next)) return json({ error: "Enter a whole number" }, 400);
       const { data: item } = await service.from("inventory_items").select("*").eq("id", id).single();
-      if (!item || item.source !== "shopify") return json({ error: "Not a Shopify item" }, 400);
+      if (!item || !(item.source === "shopify" || (item.source === "wholesale" && item.shopify_variant_id))) return json({ error: "Not a Shopify item" }, 400);
 
       let invItemId = item.shopify_inventory_item_id;
       if (!invItemId) {

@@ -1647,6 +1647,20 @@ function newAppProduct(done) {
   });
 }
 
+// Set a wholesale item's count. Items linked to a "Wholesale - ..." Shopify listing write to Shopify too.
+async function setWholesaleQty(item, next) {
+  next = Math.round(next);
+  if (item.shopify_variant_id) {
+    const r = await fnCall("shopify-inventory", { action: "set", id: item.id, quantity: next, expected: Number(item.quantity) });
+    if (r.error) { toast(r.error); return false; }
+    return true;
+  }
+  const { error } = await sb.from("inventory_items").update({ quantity: next }).eq("id", item.id);
+  if (error) { toast(error.message); return false; }
+  log("adjust_inventory", "inventory", item.id, { name: item.name, from: Number(item.quantity), to: next, wholesale: true });
+  return true;
+}
+
 // Collapsible type groups. Start collapsed; a section you open stays open while you work (until the app is reopened).
 const openGroups = new Set();
 const grpKey = (tab, cat) => `${tab}|${cat}`;
@@ -1693,7 +1707,7 @@ async function renderWholesale(root) {
         <div class="item hold" data-id="${i.id}"><div class="row between">
           ${photoSlot(i)}
           <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
-            <div class="small muted">${[i.species, i.location, seesMoney() && i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
+            <div class="small muted">${i.shopify_variant_id ? '<span class="badge">Shopify</span> ' : ""}${[i.species, i.location, seesMoney() && i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
           <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
             <span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)}</span>
             ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}</div>
@@ -1709,9 +1723,10 @@ async function renderWholesale(root) {
     e.stopPropagation();
     const item = items.find((i) => i.id === b.closest("[data-id]").dataset.id);
     const next = Math.max(0, Number(item.quantity) + Number(b.dataset.adj));
-    const { error } = await sb.from("inventory_items").update({ quantity: next }).eq("id", item.id);
-    if (error) return toast(error.message);
-    log("adjust_inventory", "inventory", item.id, { name: item.name, from: Number(item.quantity), to: next, wholesale: true });
+    b.disabled = true;
+    const ok = await setWholesaleQty(item, next);
+    b.disabled = false;
+    if (!ok) return renderWholesale(root);
     item.quantity = next; b.parentElement.querySelector(".n").textContent = next;
   }));
   if (canInv()) root.querySelectorAll(".item.hold").forEach((el) => onHold(el, () => {
@@ -1721,8 +1736,7 @@ async function renderWholesale(root) {
       <div class="stack"><button class="btn" id="count">Set count…</button><button class="btn" id="edit">Edit details</button><button class="btn danger" id="del">Delete</button></div>`, (r, close) => {
       r.querySelector("#count").onclick = async () => {
         const v = prompt(`How many ${it.name} on hand?`, Number(it.quantity)); if (v === null || v.trim() === "" || isNaN(Number(v))) return;
-        const { error } = await sb.from("inventory_items").update({ quantity: Math.max(0, Number(v)) }).eq("id", it.id);
-        if (error) return toast(error.message); close(); again();
+        if (!(await setWholesaleQty(it, Math.max(0, Number(v))))) return; close(); again();
       };
       r.querySelector("#edit").onclick = () => { close(); editWholesale(it, items, again); };
       r.querySelector("#del").onclick = async () => {
@@ -1757,6 +1771,8 @@ function editWholesale(i, all, done) {
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const f = formData(e.target), num = (x) => (x === "" ? null : Number(x));
+      const qtyChanged = i.id && Number(f.quantity) !== Number(i.quantity);
+      if (qtyChanged && i.shopify_variant_id && !(await setWholesaleQty(i, Math.max(0, Number(f.quantity))))) return;
       const row = { name: f.name, category: f.category, species: f.species || null, quantity: Number(f.quantity), unit: "ea",
         location: f.location || null, reorder_point: num(f.reorder_point), notes: f.notes || null, source: "wholesale" };
       if (photoFile) {
