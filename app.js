@@ -1032,7 +1032,7 @@ function jobRows(list) {
 }
 
 // Money is admin-only (Mitchell and Brittany). These tables are blocked for everyone else by the database.
-const seesMoney = () => can("admin");
+const seesMoney = () => !!(state.profile?.active && state.profile?.sees_money); // Mitchell and Brittany only (set per person in the database)
 async function loadItemPrices(ids) {
   if (!seesMoney() || !ids?.length) return {};
   const { data } = await sb.from("item_prices").select("*").in("item_id", ids);
@@ -2871,9 +2871,9 @@ async function renderActivity(root) {
     return d.title || d.name || "";
   };
   root.innerHTML = `
-    <div class="card"><div class="row between"><h2>Ask Claude this month</h2><span class="badge">$${total.toFixed(3)}</span></div>
+    <div class="card"><div class="row between"><h2>Ask Claude this month</h2>${seesMoney() ? `<span class="badge">$${total.toFixed(3)}</span>` : ""}</div>
       <table><tr><th>Person</th><th>Questions</th><th>Cost</th></tr>${Object.entries(byUser).map(([id, b]) =>
-        `<tr><td>${esc(nameOf(id))}</td><td>${b.n}</td><td>$${b.c.toFixed(3)}</td></tr>`).join("") || '<tr><td colspan="3" class="muted">No questions yet.</td></tr>'}</table>
+        `<tr><td>${esc(nameOf(id))}</td><td>${b.n}</td><td>${seesMoney() ? "$" + b.c.toFixed(3) : ""}</td></tr>`).join("") || '<tr><td colspan="3" class="muted">No questions yet.</td></tr>'}</table>
       ${(usage ?? []).length ? `<details style="margin-top:8px"><summary class="small">Recent questions</summary><table>${(usage ?? []).slice(0, 40).map((u) =>
         `<tr><td class="small muted">${new Date(u.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</td><td class="small">${esc(nameOf(u.user_id))}</td><td class="small">${esc(u.question)}</td></tr>`).join("")}</table></details>` : ""}
     </div>
