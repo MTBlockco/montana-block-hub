@@ -34,7 +34,12 @@ const ORDER_METHODS = ["Website", "Phone", "Email", "Sales rep", "In person"];
 const fmtDate = (d) => (d ? new Date(d + (String(d).length === 10 ? "T12:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
 const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
 const daysUntil = (d) => Math.round((new Date(d + "T12:00:00") - new Date(today() + "T12:00:00")) / 864e5);
-const isLow = (i) => i.reorder_point != null && Number(i.quantity) <= Number(i.reorder_point);
+// Website products are "Low" under 10 on hand unless an item has its own number. Supplies use their own reorder point.
+const LOW_PRODUCTS = 9;
+const isLow = (i) => {
+  const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : null);
+  return rp != null && Number(i.quantity) <= Number(rp);
+};
 
 function toast(msg) {
   const t = document.createElement("div");
@@ -1516,11 +1521,15 @@ async function renderInventory(root) {
     <input id="q" placeholder="Search boards, SKU…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
     <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
+    ${invCat === "Low" && list.length ? (() => {
+      const toBuild = list.reduce((a, i) => a + (i.reorder_qty ? Number(i.reorder_qty) : 0), 0);
+      return `<div class="card accent section" style="padding:10px">🔔 <strong>${list.length} product${list.length > 1 ? "s" : ""} under 10.</strong> Time to restock${toBuild ? `: build <strong>${toBuild}</strong> pieces total per the restock numbers below` : ""}.</div>`;
+    })() : ""}
     <div class="list" style="margin-top:12px">${list.map((i) => `
       <div class="item" data-id="${i.id}">
         <div class="row between">
           ${photoSlot(i)}
-          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? '<span class="badge warn">Low</span>' : ""}</div>
+          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? `<span class="badge warn">Low${i.reorder_qty ? ` · build ${Number(i.reorder_qty)}` : ""}</span>` : ""}</div>
             <div class="small muted">${i.source === "shopify" ? `<span class="badge">Shopify</span> ${esc(i.sku ?? "")}` : i.source === "product" ? `<span class="badge warn">App only</span> ${esc(i.sku ?? "")}` : [i.species, i.thickness, i.location].filter(Boolean).map(esc).join(" · ") || esc(i.category)}</div></div>
           ${i.source === "shopify" ? `<div class="qty"><span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span>${canInv() ? '<button class="btn sm" data-set>Count</button>' : ""}</div>` : !canInv() ? `<div class="qty"><span class="n">${Number(i.quantity)} <span class="small muted">${esc(i.unit)}</span></span></div>` : `
           <div class="qty">
@@ -1750,12 +1759,16 @@ function setShopifyCount(item, listRoot) {
       <div><strong>${esc(item.name)}</strong>${item.sku ? ` <span class="badge">${esc(item.sku)}</span>` : ""}</div>
       <p class="small muted" style="margin:0">The hub shows <strong>${Number(item.quantity)}</strong> available. Enter what's actually on the shelf. This updates Shopify right away and is logged under your name.</p>
       <div><label>Counted on hand</label><input name="q" type="number" step="1" inputmode="numeric" value="${Number(item.quantity)}" required></div>
+      <div><label>Restock: build this many when it drops under 10</label><input name="rq" type="number" min="0" step="1" inputmode="numeric" value="${item.reorder_qty ?? ""}"></div>
       <div class="row"><button class="btn primary">Update Shopify</button><button type="button" class="btn" data-close>Cancel</button></div>
     </form>`, (root, close) => {
     const inp = root.querySelector("input"); inp.focus(); inp.select();
     root.querySelector("#f").onsubmit = async (e) => {
       e.preventDefault();
       const btn = e.target.querySelector(".primary"); btn.disabled = true; btn.textContent = "Updating…";
+      const rq = e.target.querySelector("[name=rq]").value;
+      if (String(item.reorder_qty ?? "") !== rq) await sb.from("inventory_items").update({ reorder_qty: rq === "" ? null : Math.round(Number(rq)) }).eq("id", item.id);
+      if (Number(inp.value) === Number(item.quantity)) { toast("Saved"); close(); return renderInventory(listRoot); }
       const r = await fnCall("shopify-inventory", { action: "set", id: item.id, quantity: Number(inp.value), expected: Number(item.quantity) });
       if (r.error) { toast(r.error); btn.disabled = false; btn.textContent = "Update Shopify"; if (r.current !== undefined) { close(); renderInventory(listRoot); } return; }
       toast(`Shopify updated: ${item.name} = ${r.quantity}`);
@@ -1776,7 +1789,8 @@ function editItem(i = {}) {
         <div><label>Species</label><input name="species" value="${esc(i.species)}"></div>
         <div><label>Thickness</label><input name="thickness" value="${esc(i.thickness)}" placeholder="4/4, 8/4…"></div>
         <div><label>Unit</label><input name="unit" value="${esc(i.unit ?? "bf")}" placeholder="bf, ea, gal"></div>
-        <div><label>Reorder when at or below</label><input name="reorder_point" type="number" step="any" value="${esc(i.reorder_point)}"></div>
+        <div><label>Reorder when at or below</label><input name="reorder_point" type="number" step="any" value="${esc(i.reorder_point)}" placeholder="9"></div>
+        <div><label>Restock: build this many</label><input name="reorder_qty" type="number" step="1" value="${esc(i.reorder_qty)}"></div>
         <div><label>Supplier</label><select name="supplier_id"><option value="">—</option>${(state.cache.suppliers ?? []).map((s) => `<option value="${s.id}" ${i.supplier_id === s.id ? "selected" : ""}>${esc(s.name)}</option>`).join("")}</select></div>
       </div>` : ""}
       <div class="grid2">
@@ -1792,7 +1806,7 @@ function editItem(i = {}) {
       const f = formData(e.target);
       const row = { quantity: Number(f.quantity), location: f.location || null, notes: f.notes || null };
       if (full) Object.assign(row, { name: f.name, category: f.category, species: f.species || null, thickness: f.thickness || null, unit: f.unit || "ea",
-        reorder_point: f.reorder_point === "" ? null : Number(f.reorder_point), supplier_id: f.supplier_id || null });
+        reorder_point: f.reorder_point === "" ? null : Number(f.reorder_point), reorder_qty: f.reorder_qty === "" || f.reorder_qty == null ? null : Number(f.reorder_qty), supplier_id: f.supplier_id || null });
       const res = i.id ? await sb.from("inventory_items").update(row).eq("id", i.id).select().single() : await sb.from("inventory_items").insert(row).select().single();
       if (res.error) return toast(res.error.message);
       log(i.id ? "update_inventory" : "create_inventory", "inventory", res.data.id, { name: res.data.name, quantity: res.data.quantity });
