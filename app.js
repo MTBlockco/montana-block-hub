@@ -170,6 +170,7 @@ async function start() {
   const hash = location.hash.slice(1);
   state.view = VIEWS[hash] ? hash : "home";
   renderShell();
+  loadLaser();
 }
 
 // ---------------------------------------------------------------- auth screens
@@ -284,7 +285,7 @@ async function renderHome(root) {
   const first = (state.profile.full_name || "").split(" ")[0];
   const hour = Number(new Date().toLocaleString("en-US", { timeZone: "America/Denver", hour: "numeric", hour12: false }));
   const greet = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
-  const myJobs = OFFICE ? (jobs.data ?? []).filter((j) => j.status === "Active") : (jobs.data ?? []).filter((j) => j.assigned_to === state.profile.id);
+  const myJobs = OFFICE ? (jobs.data ?? []).filter((j) => j.status === "Active") : (jobs.data ?? []).filter((j) => isMyJob(j));
   const dueSoon = (jobs.data ?? []).filter((j) => j.due_date && daysUntil(j.due_date) <= 7);
 
   root.innerHTML = `
@@ -328,6 +329,165 @@ async function renderHome(root) {
     const el = root.querySelector("#reqalert"); if (!el || !count) return;
     el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
     el.querySelector("#goreq").onclick = () => { state.moreOpen = "requests"; go("more"); };
+  });
+}
+
+// ---------------------------------------------------------------- Laser run timer
+// The person engraving starts a run on a laser program; the app counts down and alarms when the laser should be done.
+// "Reloaded" logs the run (pieces + real cycle time) and starts the next one. Every run builds the data per program.
+const mmss = (sec) => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60; return h ? `${h}:${String(m).padStart(2, "0")}:${String(x).padStart(2, "0")}` : `${m}:${String(x).padStart(2, "0")}`; };
+const parseMmss = (v) => { const p = String(v).trim().split(":").map(Number); if (p.some(isNaN)) return NaN; return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p.length === 2 ? p[0] * 60 + p[1] : p[0] * 60; };
+let laserTimer = null, laserAudio = null, laserBeep = null, wakeLock = null;
+
+async function loadLaser() {
+  const { data } = await sb.from("laser_runs").select("*, laser_programs(*), jobs(title), job_steps(name)").eq("user_id", state.profile.id).eq("status", "running").order("started_at", { ascending: false }).limit(1).maybeSingle();
+  state.laser = data ? { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) } : null;
+  laserLoop();
+}
+function sessionGet(jobId) { try { return localStorage.getItem("mb_laser_pcs_" + jobId) ?? 0; } catch { return 0; } }
+function sessionSet(jobId, n) { try { n ? localStorage.setItem("mb_laser_pcs_" + jobId, String(n)) : localStorage.removeItem("mb_laser_pcs_" + jobId); } catch {} }
+
+function laserLoop() {
+  clearInterval(laserTimer);
+  let bar = document.getElementById("laserbar");
+  if (!state.laser) { bar?.remove(); stopAlarm(); releaseWake(); return; }
+  if (!bar) { bar = document.createElement("div"); bar.id = "laserbar"; document.body.appendChild(bar); }
+  const r = state.laser.run, p = r.laser_programs ?? {};
+  bar.innerHTML = `<div class="lb-top"><span class="small">🔦 ${esc(p.name ?? "Laser")} · ${esc(r.jobs?.title ?? "")}</span><span class="lb-time" id="lbtime"></span></div>
+    <div class="lb-actions"><button class="btn sm primary" id="lbreload">🔁 Reloaded – next run</button><button class="btn sm" id="lbdone">✓ Done</button><button class="btn sm" id="lbstop" title="Stop without counting this run">✕</button></div>`;
+  bar.querySelector("#lbreload").onclick = () => laserFinish(true);
+  bar.querySelector("#lbdone").onclick = () => laserFinish(false);
+  bar.querySelector("#lbstop").onclick = laserStop;
+  keepAwake();
+  const tick = () => {
+    if (!state.laser) return;
+    const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
+    const t = document.getElementById("lbtime");
+    if (t) t.textContent = left > 0 ? mmss(left) : `DONE +${mmss(-left)}`;
+    bar.classList.toggle("alarm", left <= 0);
+    if (left <= 0 && !state.laser.alarmed) { state.laser.alarmed = true; startAlarm(p.name); }
+  };
+  tick(); laserTimer = setInterval(tick, 1000);
+}
+
+function startAlarm(name) {
+  try {
+    laserAudio ??= new (window.AudioContext || window.webkitAudioContext)();
+    const beep = () => { const o = laserAudio.createOscillator(), g = laserAudio.createGain(); o.type = "square"; o.frequency.value = 880; g.gain.value = 0.25;
+      o.connect(g).connect(laserAudio.destination); o.start(); o.stop(laserAudio.currentTime + 0.35);
+      setTimeout(() => { const o2 = laserAudio.createOscillator(); o2.type = "square"; o2.frequency.value = 1175; o2.connect(g); o2.start(); o2.stop(laserAudio.currentTime + 0.35); }, 450); };
+    beep(); laserBeep = setInterval(beep, 2500);
+  } catch {}
+  navigator.vibrate?.([400, 200, 400, 200, 800]);
+  try {
+    if ("Notification" in window && Notification.permission === "granted")
+      navigator.serviceWorker?.ready.then((reg) => reg.showNotification("Laser run done", { body: `${name ?? "Laser"}: reload the machine`, tag: "laser", renotify: true, requireInteraction: true }));
+  } catch {}
+}
+function stopAlarm() { clearInterval(laserBeep); laserBeep = null; navigator.vibrate?.(0); }
+async function keepAwake() { try { if (!wakeLock && navigator.wakeLock) { wakeLock = await navigator.wakeLock.request("screen"); wakeLock.addEventListener?.("release", () => (wakeLock = null)); } } catch {} }
+function releaseWake() { try { wakeLock?.release(); } catch {} wakeLock = null; }
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.laser) keepAwake(); });
+
+async function laserStartRun(program, j, step) {
+  laserAudio ??= (() => { try { return new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } })(); // unlock sound on this tap
+  try { laserAudio?.resume?.(); } catch {}
+  try { if ("Notification" in window && Notification.permission === "default") Notification.requestPermission(); } catch {}
+  const { data, error } = await sb.from("laser_runs").insert({ program_id: program.id, job_id: j?.id ?? null, step_id: step?.id ?? null, planned_seconds: program.run_seconds })
+    .select("*, laser_programs(*), jobs(title), job_steps(name)").single();
+  if (error) return toast(error.message);
+  state.laser = { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) };
+  stopAlarm(); laserLoop();
+}
+async function laserFinish(next) {
+  const L = state.laser; if (!L) return;
+  stopAlarm();
+  const r = L.run, ppr = r.laser_programs?.pieces_per_run ?? 0;
+  const { error } = await sb.from("laser_runs").update({ status: "done", ended_at: new Date().toISOString(), pieces: ppr }).eq("id", r.id);
+  if (error) return toast(error.message);
+  const total = L.session + ppr; sessionSet(r.job_id, total);
+  if (next) return laserStartRun(r.laser_programs, { id: r.job_id }, { id: r.step_id });
+  state.laser = null; laserLoop();
+  if (r.step_id && total > 0 && confirm(`${total} pieces engraved this session. Add them to the ${r.job_steps?.name ?? "Engrave"} step on ${r.jobs?.title ?? "the job"}?`)) {
+    const { data: st } = await sb.from("job_steps").select("done_qty").eq("id", r.step_id).single();
+    if (st) await sb.from("job_steps").update({ done_qty: Number(st.done_qty) + total }).eq("id", r.step_id);
+    toast(`Added ${total} pieces`);
+  }
+  sessionSet(r.job_id, 0);
+}
+async function laserStop() {
+  const L = state.laser; if (!L) return;
+  if (!confirm("Stop this run without counting it?")) return;
+  stopAlarm();
+  await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", L.run.id);
+  state.laser = null; laserLoop();
+}
+
+async function laserSheet(j, step, after) {
+  const [{ data: programs }, { data: stats }] = await Promise.all([
+    sb.from("laser_programs").select("*").eq("active", true).order("name"),
+    sb.from("laser_program_stats").select("*"),
+  ]);
+  const stat = Object.fromEntries((stats ?? []).map((x) => [x.program_id, x]));
+  const prod = (j.product || j.title || "").toLowerCase();
+  const list = (programs ?? []).sort((a, b) => Number((b.product ?? "").toLowerCase() === prod) - Number((a.product ?? "").toLowerCase() === prod));
+  const last = (() => { try { return localStorage.getItem("mb_laser_prog_" + j.id); } catch { return null; } })();
+  sheet(`<div class="stack">
+    <div class="row between"><h2 style="margin:0">🔦 Laser timer</h2><button class="btn sm" data-close>Close</button></div>
+    <p class="small muted" style="margin:0">${esc(j.title)} · ${esc(step?.name ?? "Engrave")}</p>
+    ${state.laser ? `<div class="card" style="padding:10px">A run is already going: <strong>${esc(state.laser.run.laser_programs?.name ?? "")}</strong>. Use the bar at the bottom of the screen.</div>` : ""}
+    ${list.length ? `<div><label>Laser program</label><select id="lp">${list.map((p) => `<option value="${p.id}" ${p.id === last ? "selected" : ""}>${esc(p.name)}${p.product ? " · " + esc(p.product) : ""}</option>`).join("")}</select></div>
+      <div class="card" id="lpinfo" style="padding:10px"></div>
+      <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
+    : `<p class="muted">No laser programs yet. Add the first one: how long a run takes and how many pieces it does.</p><button class="btn primary" id="lpnew">+ New program</button>`}
+    <p class="small muted" style="margin:0">Keep the app open on this phone while the laser runs. It keeps the screen on and beeps when the run should be done. Tap <strong>Reloaded</strong> when you put the next batch in.</p>
+  </div>`, (root, close) => {
+    const sel = root.querySelector("#lp");
+    const cur = () => list.find((p) => p.id === sel?.value);
+    const info = () => {
+      const p = cur(); if (!p) return; const st = stat[p.id];
+      root.querySelector("#lpinfo").innerHTML = `<div><strong>${mmss(p.run_seconds)}</strong> per run · <strong>${p.pieces_per_run}</strong> piece${p.pieces_per_run > 1 ? "s" : ""} per run</div>
+        <div class="small muted">${mmss(p.run_seconds / p.pieces_per_run)} per piece on the laser${st?.runs ? ` · ${st.runs} runs logged, ${st.pieces} pcs${st.avg_cycle_seconds ? ` · real cycle incl. reload ${mmss(st.avg_cycle_seconds)} (${Math.round(3600 / st.avg_cycle_seconds * p.pieces_per_run)} pcs/hr)` : ""}` : " · no runs logged yet"}</div>
+        ${p.notes ? `<div class="small" style="margin-top:4px;white-space:pre-wrap">${esc(p.notes)}</div>` : ""}`;
+    };
+    if (sel) { sel.onchange = info; info(); }
+    root.querySelector("#lpstart")?.addEventListener("click", async () => {
+      const p = cur(); if (!p) return;
+      try { localStorage.setItem("mb_laser_prog_" + j.id, p.id); } catch {}
+      close(); await laserStartRun(p, j, step); toast("Laser run started");
+    });
+    root.querySelector("#lpedit")?.addEventListener("click", () => { close(); laserProgramForm(cur(), j, () => laserSheet(j, step, after)); });
+    root.querySelector("#lpnew")?.addEventListener("click", () => { close(); laserProgramForm({}, j, () => laserSheet(j, step, after)); });
+  });
+}
+
+function laserProgramForm(p = {}, j, done) {
+  sheet(`<form class="stack" id="lpf">
+    <h2 style="margin:0">${p.id ? "Edit laser program" : "New laser program"}</h2>
+    <div><label>Program name</label><input name="name" value="${esc(p.name ?? "")}" required placeholder="MKC logo – 12x18 board"></div>
+    <div><label>Product (optional)</label><input name="product" value="${esc(p.product ?? j?.product ?? "")}"></div>
+    <div class="grid2">
+      <div><label>Run time (min:sec)</label><input name="run" value="${p.run_seconds ? mmss(p.run_seconds) : ""}" required placeholder="12:30" inputmode="numeric"></div>
+      <div><label>Pieces per run</label><input name="ppr" type="number" min="1" step="1" inputmode="numeric" value="${p.pieces_per_run ?? 1}" required></div>
+    </div>
+    <div><label>Notes (settings, fixture, file name)</label><textarea name="notes" style="min-height:60px">${esc(p.notes ?? "")}</textarea></div>
+    <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
+      ${p.id && can("admin") ? '<button type="button" class="btn danger" id="lpdel">Retire</button>' : ""}</div>
+  </form>`, (root, close) => {
+    root.querySelector("#lpf").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target), secs = parseMmss(f.run);
+      if (!(secs > 0)) return toast("Enter the run time like 12:30");
+      const row = { name: f.name, product: f.product || null, run_seconds: secs, pieces_per_run: Math.max(1, Math.round(Number(f.ppr))), notes: f.notes || null, updated_at: new Date().toISOString() };
+      const res = p.id ? await sb.from("laser_programs").update(row).eq("id", p.id) : await sb.from("laser_programs").insert(row);
+      if (res.error) return toast(res.error.message);
+      log(p.id ? "update_laser_program" : "create_laser_program", "laser_program", p.id ?? null, row);
+      close(); done?.();
+    };
+    root.querySelector("#lpdel")?.addEventListener("click", async () => {
+      if (!confirm("Retire this program? Its run history stays.")) return;
+      await sb.from("laser_programs").update({ active: false }).eq("id", p.id); close(); done?.();
+    });
   });
 }
 
@@ -465,6 +625,7 @@ async function renderJobs(root) {
   (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
+  else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
   if (["Materials", "Shopify", "Wholesale"].includes(jobFilter) && !can("lead")) jobFilter = "Active";
   const tabs = can("lead") ? ["Active", "Complete", "Shopify", "Wholesale", "Materials"] : ["Active", "Complete"];
@@ -481,6 +642,31 @@ async function renderJobs(root) {
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
+  if (can("lead")) root.querySelectorAll(".item.hold[data-job]").forEach((el) => onHold(el, () => assignJob(jobs.find((j) => j.id === el.dataset.job), () => renderJobs(root))));
+}
+
+// Leads and up: press and hold a job to assign people. Assigned jobs show up as "Yours" for them and on their Home screen.
+function assignJob(j, done) {
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/shipping room|office|guest/i.test(p.full_name ?? ""));
+  const on = new Set(jobPeople(j));
+  sheet(`<form class="stack" id="as">
+    <h2 style="margin:0">Assign: ${esc(j.title)}</h2>
+    <p class="small muted" style="margin:0">Pick everyone working this job. It shows up as theirs in the app.</p>
+    <div class="list">${people.map((p) => `<label class="item row between" style="cursor:pointer"><span class="title">${esc(p.full_name || p.email)}</span>
+      <input type="checkbox" name="p_${p.id}" ${on.has(p.id) ? "checked" : ""} style="width:22px;height:22px"></label>`).join("")}</div>
+    <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (root, close) => {
+    root.querySelector("#as").onsubmit = async (e) => {
+      e.preventDefault();
+      const ids = people.filter((p) => root.querySelector(`[name="p_${p.id}"]`).checked).map((p) => p.id);
+      // Keep the lead if still picked; otherwise the first person picked becomes the lead.
+      const lead = ids.includes(j.assigned_to) ? j.assigned_to : ids[0] ?? null;
+      const { error } = await sb.from("jobs").update({ assignees: ids, assigned_to: lead }).eq("id", j.id);
+      if (error) return toast(error.message);
+      log("assign_job", "job", j.id, { title: j.title, people: ids.map(nameOf) });
+      toast(ids.length ? `Assigned to ${ids.map(nameOf).join(", ")}` : "Unassigned"); close(); done?.();
+    };
+  });
 }
 
 // ---------------------------------------------------------------- Open Shopify orders vs inventory
@@ -756,14 +942,20 @@ function jobProgress(j, steps) {
 }
 function currentStep(j, steps) { return steps.find((st) => st.done_qty < j.quantity); }
 
+// Everyone on a job: the lead plus anyone assigned.
+const jobPeople = (j) => [...new Set([j.assigned_to, ...(j.assignees ?? [])].filter(Boolean))];
+const isMyJob = (j) => jobPeople(j).includes(state.profile?.id);
+const peopleLine = (j) => { const ids = jobPeople(j); return ids.length ? `<span class="assignees">👤 ${ids.map((id) => esc(nameOf(id) || "?")).join(", ")}</span>` : ""; };
+
 function jobCard(j, steps) {
   const d = j.due_date ? daysUntil(j.due_date) : null;
   const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
   const pct = jobProgress(j, steps), cur = currentStep(j, steps);
-  return `<div class="item" data-job="${j.id}">
-    <div class="row between"><span class="title">${esc(j.title)}</span>
+  return `<div class="item${can("lead") ? " hold" : ""}${isMyJob(j) && j.status !== "Complete" ? " mine" : ""}" data-job="${j.id}">
+    <div class="row between"><span class="title">${isMyJob(j) && j.status !== "Complete" ? '<span class="badge ok">Yours</span> ' : ""}${esc(j.title)}</span>
       ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
-    <div class="small muted">${[j.quantity + " pc", j.product, j.customer, j.assigned_to ? nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
+    ${peopleLine(j) ? `<div class="small" style="margin:2px 0">${peopleLine(j)}</div>` : can("lead") && j.status !== "Complete" ? '<div class="small muted" style="margin:2px 0">👤 Not assigned · hold to assign</div>' : ""}
+    <div class="small muted">${[j.quantity + " pc", j.product, j.customer].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
     ${j.shipped_qty != null ? `<div class="small" style="margin-top:2px">📦 Sent: <strong>${j.shipped_qty}</strong> of ${j.quantity}${j.shipped_at ? " on " + fmtDate(j.shipped_at) : ""}
       ${seesMoney() ? (state.cache.jobMoney?.[j.id]?.billed_at ? ' <span class="badge ok">Billed</span>' : ' <span class="badge warn">Ready to bill</span>') : ""}</div>` : ""}
     ${j.status !== "Complete" && steps.length ? `<div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div>
@@ -917,7 +1109,8 @@ async function viewJob(j, done) {
   sheet(`
     <div class="row between"><span class="badge ${j.status === "Complete" ? "ok" : ""}">${j.status === "Complete" ? "Complete" : "Active"}</span><button class="btn sm" data-close>Close</button></div>
     <h2 style="margin:10px 0 2px">${esc(j.title)}</h2>
-    <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", j.assigned_to ? "Lead: " + nameOf(j.assigned_to) : ""].filter(Boolean).map(esc).join(" · ")}</p>
+    <p class="small muted" style="margin:0">${[j.quantity + " pieces", j.product, j.customer, j.channel, j.due_date ? "Due " + fmtDate(j.due_date) : "", ].filter(Boolean).map(esc).join(" · ")}</p>
+    <div class="row between" style="margin-top:4px">${peopleLine(j) || '<span class="small muted">👤 Not assigned</span>'}${can("lead") ? '<button class="btn sm" id="assign">Assign</button>' : ""}</div>
     ${j.notes ? `<p class="small" style="white-space:pre-wrap">${esc(j.notes)}</p>` : ""}
     ${money ? `<details class="card" style="margin:8px 0;padding:10px"><summary class="small muted" style="cursor:pointer">💲 Pricing &amp; PO <span class="muted">(admin only)</span>${money.billed_at ? ' <span class="badge ok">Billed</span>' : j.shipped_qty != null ? ' <span class="badge warn">Ready to bill</span>' : ""}</summary>
       <div style="margin-top:6px"><strong>${usd(money.line_total)}</strong>${money.unit_price != null ? ` · ${usd(money.unit_price)} ea` : ""}</div>
@@ -944,6 +1137,7 @@ async function viewJob(j, done) {
           <span class="small muted">This job: ${fmtMin(stepMin(st.id))} labor${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} labor per 10 pcs` : ""}</span>
           <span class="row" style="gap:6px">
             ${j.status !== "Complete" && !OFFICE ? (mine?.step_id === st.id ? '<button class="btn sm danger" data-stop>Stop</button><button class="btn sm" data-cancelt>Cancel</button>' : `<button class="btn sm primary" data-start="${st.id}" ${mine ? "disabled" : ""}>Start timer</button>`) : ""}
+            ${/engrav|laser/i.test(st.name) && j.status !== "Complete" ? `<button class="btn sm" data-laser="${st.id}">🔦 Laser timer</button>` : ""}
             <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
             ${can("lead") && j.status !== "Complete" ? `<button class="btn icon sm" data-fix="${st.id}" aria-label="Adjust count">✎</button>` : ""}
           </span></div>
@@ -1018,6 +1212,8 @@ async function viewJob(j, done) {
     root.querySelector("#reopen")?.addEventListener("click", async () => {
       await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();
     });
+    root.querySelector("#assign")?.addEventListener("click", () => { close(); assignJob(j, () => reopenJob(j.id, done)); });
+    root.querySelectorAll("[data-laser]").forEach((b) => (b.onclick = () => { close(); laserSheet(j, (steps ?? []).find((x) => x.id === b.dataset.laser), () => reopenJob(j.id, done)); }));
     if (isOwner()) {
       const reopenIt = () => reopenJob(j.id, done);
       root.querySelector("#arrange")?.addEventListener("click", () => { close(); arrangeSteps(j, steps ?? [], null, reopenIt); });
