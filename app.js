@@ -277,10 +277,12 @@ const nameOf = (id) => state.cache.profiles?.find((p) => p.id === id)?.full_name
 
 // ---------------------------------------------------------------- Home
 async function renderHome(root) {
-  const [ann, jobs] = await Promise.all([
+  const [ann, jobs, mine] = await Promise.all([
     sb.from("announcements").select("*").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(20),
     sb.from("jobs").select("*").neq("status", "Complete").order("due_date", { ascending: true, nullsFirst: false }),
+    sb.from("job_steps").select("job_id, name, assignees").contains("assignees", [state.profile.id]),
   ]);
+  tagMySteps(jobs.data, mine.data);
   await loadProfiles();
   const first = (state.profile.full_name || "").split(" ")[0];
   const hour = Number(new Date().toLocaleString("en-US", { timeZone: "America/Denver", hour: "numeric", hour12: false }));
@@ -637,7 +639,7 @@ let jobFilter = "Active";
 async function renderJobs(root) {
   const [{ data: jobs }, { data: steps }] = await Promise.all([
     sb.from("jobs").select("*").order("due_date", { ascending: true, nullsFirst: false }).order("created_at"),
-    sb.from("job_steps").select("id, job_id, name, position, done_qty").order("position"),
+    sb.from("job_steps").select("id, job_id, name, position, done_qty, assignees").order("position"),
     loadProfiles(),
   ]);
   state.cache.jobs = jobs ?? [];
@@ -645,6 +647,7 @@ async function renderJobs(root) {
   if (seesMoney()) ((await sb.from("job_financials").select("*")).data ?? []).forEach((f) => (state.cache.jobMoney[f.job_id] = f));
   const byJob = {};
   (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
+  tagMySteps(jobs, steps);
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
@@ -665,6 +668,28 @@ async function renderJobs(root) {
   root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
   if (can("lead")) root.querySelectorAll(".item.hold[data-job]").forEach((el) => onHold(el, () => assignJob(jobs.find((j) => j.id === el.dataset.job), () => renderJobs(root))));
+}
+
+// Leads and up: assign one process (step) on a job to specific people. Blank = anyone.
+function assignStep(j, st, done) {
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/shipping room|office|guest/i.test(p.full_name ?? ""));
+  const on = new Set(st.assignees ?? []);
+  sheet(`<form class="stack" id="sa">
+    <h2 style="margin:0">${esc(st.name)}</h2>
+    <p class="small muted" style="margin:0">${esc(j.title)} · who does this step? Leave everyone unchecked for "anyone".</p>
+    <div class="list">${people.map((p) => `<label class="item row between" style="cursor:pointer"><span class="title">${esc(p.full_name || p.email)}</span>
+      <input type="checkbox" name="p_${p.id}" ${on.has(p.id) ? "checked" : ""} style="width:22px;height:22px"></label>`).join("")}</div>
+    <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (root, close) => {
+    root.querySelector("#sa").onsubmit = async (e) => {
+      e.preventDefault();
+      const ids = people.filter((p) => root.querySelector(`[name="p_${p.id}"]`).checked).map((p) => p.id);
+      const { error } = await sb.from("job_steps").update({ assignees: ids }).eq("id", st.id);
+      if (error) return toast(error.message);
+      log("assign_step", "job", j.id, { step: st.name, people: ids.map(nameOf) });
+      toast(ids.length ? `${st.name}: ${ids.map(nameOf).join(", ")}` : `${st.name}: anyone`); close(); done?.();
+    };
+  });
 }
 
 // Leads and up: press and hold a job to assign people. Assigned jobs show up as "Yours" for them and on their Home screen.
@@ -966,7 +991,14 @@ function currentStep(j, steps) { return steps.find((st) => st.done_qty < j.quant
 
 // Everyone on a job: the lead plus anyone assigned.
 const jobPeople = (j) => [...new Set([j.assigned_to, ...(j.assignees ?? [])].filter(Boolean))];
-const isMyJob = (j) => jobPeople(j).includes(state.profile?.id);
+const mySteps = (j) => j._mySteps ?? [];
+const isMyJob = (j) => jobPeople(j).includes(state.profile?.id) || mySteps(j).length > 0;
+// Tag each job with the steps assigned to the signed-in person.
+function tagMySteps(jobs, steps) {
+  const me = state.profile?.id, by = {};
+  (steps ?? []).forEach((st) => { if ((st.assignees ?? []).includes(me)) (by[st.job_id] ??= []).push(st.name); });
+  (jobs ?? []).forEach((j) => (j._mySteps = by[j.id] ?? []));
+}
 const peopleLine = (j) => { const ids = jobPeople(j); return ids.length ? `<span class="assignees">👤 ${ids.map((id) => esc(nameOf(id) || "?")).join(", ")}</span>` : ""; };
 
 function jobCard(j, steps) {
@@ -976,6 +1008,7 @@ function jobCard(j, steps) {
   return `<div class="item${can("lead") ? " hold" : ""}${isMyJob(j) && j.status !== "Complete" ? " mine" : ""}" data-job="${j.id}">
     <div class="row between"><span class="title">${isMyJob(j) && j.status !== "Complete" ? '<span class="badge ok">Yours</span> ' : ""}${esc(j.title)}</span>
       ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
+    ${mySteps(j).length && j.status !== "Complete" ? `<div class="small" style="margin:2px 0">🛠 Your step${mySteps(j).length > 1 ? "s" : ""}: <strong>${mySteps(j).map(esc).join(", ")}</strong></div>` : ""}
     ${peopleLine(j) ? `<div class="small" style="margin:2px 0">${peopleLine(j)}</div>` : can("lead") && j.status !== "Complete" ? '<div class="small muted" style="margin:2px 0">👤 Not assigned · hold to assign</div>' : ""}
     <div class="small muted">${[j.quantity + " pc", j.product, j.customer].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
     ${j.shipped_qty != null ? `<div class="small" style="margin-top:2px">📦 Sent: <strong>${j.shipped_qty}</strong> of ${j.quantity}${j.shipped_at ? " on " + fmtDate(j.shipped_at) : ""}
@@ -993,6 +1026,7 @@ function jobRows(list) {
     const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
     return `<div class="item" data-job="${j.id}"><div class="row between"><span class="title">${esc(j.title)}</span>
       <span class="badge">${j.quantity ?? 1} pc</span></div>
+      ${mySteps(j).length ? `<div class="small">🛠 Your step${mySteps(j).length > 1 ? "s" : ""}: <strong>${mySteps(j).map(esc).join(", ")}</strong></div>` : ""}
       <div class="small muted">${esc(j.customer ?? "")}${j.due_date ? ` · <span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}</div></div>`;
   }).join("")}</div>`;
 }
@@ -1153,7 +1187,9 @@ async function viewJob(j, done) {
     <div class="list">${(steps ?? []).map((st) => {
       const s10 = statFor(st.name);
       return `<div class="item${isOwner() ? " hold" : ""}" data-step="${st.id}" style="cursor:default">
-        <div class="row between"><span class="title">${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
+        <div class="row between"><span class="title">${(st.assignees ?? []).includes(state.profile.id) ? '<span class="badge ok">Yours</span> ' : ""}${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
+        ${(st.assignees ?? []).length || can("lead") ? `<div class="row" style="gap:6px;margin-top:2px">${(st.assignees ?? []).length ? `<span class="small assignees">👤 ${st.assignees.map((id) => esc(nameOf(id) || "?")).join(", ")}</span>` : '<span class="small muted">👤 Anyone</span>'}
+          ${can("lead") && j.status !== "Complete" ? `<button class="linkbtn small" style="float:none;color:var(--accent);font-size:.85rem;text-decoration:underline" data-stepassign="${st.id}">${(st.assignees ?? []).length ? "change" : "assign"}</button>` : ""}</div>` : ""}
         <div class="progress thin" style="margin:6px 0"><span style="width:${Math.min(100, Math.round(st.done_qty / j.quantity * 100))}%"></span></div>
         <div class="row between" style="gap:6px;flex-wrap:wrap">
           <span class="small muted">This job: ${fmtMin(stepMin(st.id))} labor${s10?.minutes_per_10 ? ` · Avg ${fmtMin(s10.minutes_per_10)} labor per 10 pcs` : ""}</span>
@@ -1235,6 +1271,7 @@ async function viewJob(j, done) {
       await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();
     });
     root.querySelector("#assign")?.addEventListener("click", () => { close(); assignJob(j, () => reopenJob(j.id, done)); });
+    root.querySelectorAll("[data-stepassign]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); close(); assignStep(j, (steps ?? []).find((x) => x.id === b.dataset.stepassign), () => reopenJob(j.id, done)); }));
     root.querySelectorAll("[data-laser]").forEach((b) => (b.onclick = () => { close(); laserSheet(j, (steps ?? []).find((x) => x.id === b.dataset.laser), () => reopenJob(j.id, done)); }));
     if (isOwner()) {
       const reopenIt = () => reopenJob(j.id, done);
