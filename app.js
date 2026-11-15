@@ -27,8 +27,10 @@ async function fnCall(name, body) {
   return data;
 }
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
-const INV_CATS = ["Finished goods", "Board care", "Merch"];
-const WHOLESALE_CATS = ["Butcher blocks", "Cutting boards", "Charcuterie", "Knife blocks & rails", "Lazy Susans", "Coasters & small goods", "Other"];
+// Product types, used to group both Website and Wholesale inventory (same order everywhere).
+const PRODUCT_TYPES = ["Butcher blocks", "Cutting boards", "Charcuterie & serving", "Knife blocks & rails", "Lazy Susans", "Coasters & small goods", "Bundles", "Board care", "Merch", "Other"];
+const INV_CATS = PRODUCT_TYPES;
+const WHOLESALE_CATS = PRODUCT_TYPES;
 const SUPPLY_CATS = ["Abrasives", "Finish & oil", "Glue & epoxy", "Magnets", "Fasteners & hardware", "Blades & bits", "Packaging & shipping", "Engraving & branding", "PPE & safety", "Cleaning & shop", "Lumber", "Other"];
 const ORDER_METHODS = ["Website", "Phone", "Email", "Sales rep", "In person"];
 const fmtDate = (d) => (d ? new Date(d + (String(d).length === 10 ? "T12:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
@@ -1511,8 +1513,9 @@ async function renderInventory(root) {
   if (can("lead")) suppliers = (await sb.from("suppliers").select("id, name").order("name")).data ?? [];
   state.cache.suppliers = suppliers;
   const q = invQ.toLowerCase();
+  if (invCat !== "All" && invCat !== "Low") invCat = "All";
   const list = (items ?? []).filter((i) =>
-    (invCat === "All" || (invCat === "Low" ? isLow(i) : i.category === invCat)) &&
+    (invCat === "All" || isLow(i)) &&
     (!q || [i.name, i.sku, i.species, i.thickness, i.location].join(" ").toLowerCase().includes(q)));
   const lastSync = (items ?? []).filter((i) => i.synced_at).map((i) => i.synced_at).sort().pop();
   root.innerHTML = `
@@ -1520,12 +1523,12 @@ async function renderInventory(root) {
     ${productTabs()}
     <input id="q" placeholder="Search boards, SKU…" value="${esc(invQ)}" style="margin-bottom:10px">
     ${lastSync ? `<p class="small muted" style="margin:0 0 8px">Product counts come from Shopify · last synced ${new Date(lastSync).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
-    <div class="chips">${["All", "Low", ...INV_CATS].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
+    <div class="chips">${["All", "Low"].map((c) => `<button class="chip ${c === invCat ? "active" : ""}" data-c="${c}">${c}</button>`).join("")}</div>
     ${invCat === "Low" && list.length ? (() => {
       const toBuild = list.reduce((a, i) => a + (i.reorder_qty ? Number(i.reorder_qty) : 0), 0);
       return `<div class="card accent section" style="padding:10px">🔔 <strong>${list.length} product${list.length > 1 ? "s" : ""} under 10.</strong> Time to restock${toBuild ? `: build <strong>${toBuild}</strong> pieces total per the restock numbers below` : ""}.</div>`;
     })() : ""}
-    <div class="list" style="margin-top:12px">${list.map((i) => `
+    <div style="margin-top:12px">${list.length ? groupedList("web", list, (i) => `
       <div class="item" data-id="${i.id}">
         <div class="row between">
           ${photoSlot(i)}
@@ -1538,12 +1541,13 @@ async function renderInventory(root) {
             <button class="btn icon sm" data-adj="1" aria-label="Increase">+</button>
           </div>`}
         </div>
-      </div>`).join("") || '<div class="empty">No items yet.</div>'}</div>`;
+      </div>`, invCat === "Low" || !!q) : '<div class="empty">No items yet.</div>'}</div>`;
   wireTopbar(root);
   const qEl = root.querySelector("#q");
   qEl.oninput = () => { invQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => { renderInventory(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }); }, 250); };
   root.querySelectorAll("[data-c]").forEach((b) => (b.onclick = () => { invCat = b.dataset.c; renderInventory(root); }));
   wireProductTabs(root);
+  wireGroups(root, "web");
   wireSnaps(root, () => renderInventory(root));
   root.querySelector("#new")?.addEventListener("click", () => editItem());
   root.querySelector("#newprod")?.addEventListener("click", () => newAppProduct(() => renderInventory(root)));
@@ -1643,6 +1647,25 @@ function newAppProduct(done) {
   });
 }
 
+// Collapsible type groups. Open/closed is remembered per phone.
+const grpKey = (tab, cat) => `mb_grp_${tab}_${cat}`;
+const grpOpen = (tab, cat) => { try { return localStorage.getItem(grpKey(tab, cat)) !== "0"; } catch { return true; } };
+function groupedList(tab, items, rowHtml, forceOpen) {
+  const groups = {};
+  items.forEach((i) => (groups[PRODUCT_TYPES.includes(i.category) ? i.category : i.category || "Other"] ??= []).push(i));
+  const order = [...PRODUCT_TYPES.filter((c) => groups[c]), ...Object.keys(groups).filter((c) => !PRODUCT_TYPES.includes(c)).sort()];
+  return order.map((cat) => {
+    const its = groups[cat], low = its.filter(isLow).length, pcs = its.reduce((a, i) => a + Math.max(0, Number(i.quantity)), 0);
+    return `<details class="grp" data-grp="${esc(cat)}" ${forceOpen || grpOpen(tab, cat) ? "open" : ""}>
+      <summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">${esc(cat)}</span>
+        <span class="grp-meta">${its.length} item${its.length > 1 ? "s" : ""} · ${pcs} pcs${low && tab === "web" ? ` · <span class="badge warn">${low} low</span>` : ""}</span></summary>
+      <div class="list">${its.map(rowHtml).join("")}</div></details>`;
+  }).join("");
+}
+function wireGroups(root, tab) {
+  root.querySelectorAll("details.grp").forEach((d) => d.addEventListener("toggle", () => { try { localStorage.setItem(grpKey(tab, d.dataset.grp), d.open ? "1" : "0"); } catch {} }));
+}
+
 function productTabs() {
   return `<div class="seg" style="margin-bottom:10px">${["Website", "Wholesale"].map((t) => `<button class="${invTab === t ? "active" : ""}" data-tab="${t}">${t === "Website" ? "WEBSITE INVENTORY" : "WHOLESALE"}</button>`).join("")}</div>`;
 }
@@ -1658,7 +1681,6 @@ async function renderWholesale(root) {
   (items ?? []).forEach((i) => (i.wholesale_price = prices[i.id]?.wholesale_price ?? null));
   const q = whQ.toLowerCase();
   const list = (items ?? []).filter((i) => !q || [i.name, i.category, i.species, i.location, i.notes].join(" ").toLowerCase().includes(q));
-  const groups = {}; list.forEach((i) => (groups[i.category || "Other"] ??= []).push(i));
   const totalPcs = (items ?? []).reduce((a, i) => a + Number(i.quantity), 0);
   const totalVal = (items ?? []).reduce((a, i) => a + Number(i.quantity) * Number(i.wholesale_price ?? 0), 0);
   root.innerHTML = `
@@ -1666,8 +1688,7 @@ async function renderWholesale(root) {
     ${productTabs()}
     <input id="q" placeholder="Search patterns, species, bins…" value="${esc(whQ)}" style="margin-bottom:6px">
     <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && seesMoney() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
-    ${Object.entries(groups).map(([cat, its]) => `<h2 class="section">${esc(cat)}</h2>
-      <div class="list">${its.map((i) => `
+    ${list.length ? groupedList("wh", list, (i) => `
         <div class="item hold" data-id="${i.id}"><div class="row between">
           ${photoSlot(i)}
           <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
@@ -1675,8 +1696,8 @@ async function renderWholesale(root) {
           <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
             <span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)}</span>
             ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}</div>
-        </div></div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No wholesale items yet. Tap + Item to add your random-pattern stock."}</div>`}`;
-  wireTopbar(root); wireProductTabs(root);
+        </div></div>`, !!q) : `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No wholesale items yet. Tap + Item to add your random-pattern stock."}</div>`}`;
+  wireTopbar(root); wireProductTabs(root); wireGroups(root, "wh");
   wireSnaps(root, () => renderWholesale(root));
   const qEl = root.querySelector("#q");
   qEl.oninput = () => { whQ = qEl.value; clearTimeout(qEl._t); qEl._t = setTimeout(() => renderWholesale(root).then(() => { const n = root.querySelector("#q"); n.focus(); n.setSelectionRange(n.value.length, n.value.length); }), 250); };
@@ -1759,6 +1780,7 @@ function setShopifyCount(item, listRoot) {
       <div><strong>${esc(item.name)}</strong>${item.sku ? ` <span class="badge">${esc(item.sku)}</span>` : ""}</div>
       <p class="small muted" style="margin:0">The hub shows <strong>${Number(item.quantity)}</strong> available. Enter what's actually on the shelf. This updates Shopify right away and is logged under your name.</p>
       <div><label>Counted on hand</label><input name="q" type="number" step="1" inputmode="numeric" value="${Number(item.quantity)}" required></div>
+      <div><label>Type</label><select name="cat">${[...new Set([...PRODUCT_TYPES, item.category].filter(Boolean))].map((c) => `<option ${item.category === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></div>
       <div><label>Restock: build this many when it drops under 10</label><input name="rq" type="number" min="0" step="1" inputmode="numeric" value="${item.reorder_qty ?? ""}"></div>
       <div class="row"><button class="btn primary">Update Shopify</button><button type="button" class="btn" data-close>Cancel</button></div>
     </form>`, (root, close) => {
@@ -1767,7 +1789,8 @@ function setShopifyCount(item, listRoot) {
       e.preventDefault();
       const btn = e.target.querySelector(".primary"); btn.disabled = true; btn.textContent = "Updating…";
       const rq = e.target.querySelector("[name=rq]").value;
-      if (String(item.reorder_qty ?? "") !== rq) await sb.from("inventory_items").update({ reorder_qty: rq === "" ? null : Math.round(Number(rq)) }).eq("id", item.id);
+      const cat = e.target.querySelector("[name=cat]").value;
+      if (String(item.reorder_qty ?? "") !== rq || cat !== item.category) await sb.from("inventory_items").update({ reorder_qty: rq === "" ? null : Math.round(Number(rq)), category: cat }).eq("id", item.id);
       if (Number(inp.value) === Number(item.quantity)) { toast("Saved"); close(); return renderInventory(listRoot); }
       const r = await fnCall("shopify-inventory", { action: "set", id: item.id, quantity: Number(inp.value), expected: Number(item.quantity) });
       if (r.error) { toast(r.error); btn.disabled = false; btn.textContent = "Update Shopify"; if (r.current !== undefined) { close(); renderInventory(listRoot); } return; }

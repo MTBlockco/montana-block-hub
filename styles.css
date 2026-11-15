@@ -264,3 +264,13 @@ details.stepsdone > summary { padding: 8px 10px; border-radius: 10px; background
 .jv-people .assignees { font-weight: 600; }
 .jv-more { margin-top: 6px; }
 .jv-more > summary { cursor: pointer; }
+
+details.grp { margin: 0 0 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+details.grp > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 12px 12px; user-select: none; }
+details.grp > summary::-webkit-details-marker { display: none; }
+details.grp .grp-arrow { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+  background: var(--accent); color: var(--accent-ink); font-size: 14px; transition: transform .15s; }
+details.grp[open] .grp-arrow { transform: rotate(90deg); }
+details.grp .grp-name { font-family: var(--display); font-size: 1.1rem; letter-spacing: .03em; text-transform: uppercase; }
+details.grp .grp-meta { margin-left: auto; font-size: .8rem; color: var(--muted); text-align: right; }
+details.grp > .list { padding: 0 8px 8px; }
