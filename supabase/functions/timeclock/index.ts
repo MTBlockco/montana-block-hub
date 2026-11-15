@@ -95,6 +95,16 @@ Deno.serve(async (req) => {
     return json({ open, break: open ? await openBreak() : null });
   }
 
+  // Your own hourly rate from Square (never anyone else's).
+  if (body.action === "my_rate") {
+    if (!tmId) return json({ ok: true, rate: null });
+    try {
+      const ws = await square(`/team-members/${tmId}/wage-setting`);
+      const jobs = (ws.wage_setting?.job_assignments ?? []).filter((a: any) => a.pay_type === "HOURLY" && a.hourly_rate);
+      return json({ ok: true, rates: jobs.map((a: any) => ({ title: a.job_title ?? "", cents: a.hourly_rate.amount })) });
+    } catch (e) { return json({ ok: false, error: (e as Error).message }); }
+  }
+
   // Admins: who is on the clock right now according to Square (covers register punches too).
   if (body.action === "team_status") {
     if (!["admin", "owner"].includes(caller.profile.role)) return json({ error: "Admins only" }, 403);

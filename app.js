@@ -2586,10 +2586,16 @@ async function renderMyHoursInner(root) {
   root.innerHTML = `<div class="card stack">
     <div class="row between"><h2 style="margin:0">My hours</h2><span class="badge">This week ${hm(tot(cur))}</span></div>
     <p class="small muted" style="margin:0">Last week: ${hm(tot(prev))}. Payroll uses Square; if something looks wrong, tell Brittany.</p>
+    <div class="small" id="myrate"></div>
     <table><tr><th>Day</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr>${(data ?? []).map((e) => `<tr>
       <td>${new Date(e.clock_in).toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" })}</td>
       <td>${timeOf(e.clock_in)}</td><td>${e.clock_out ? timeOf(e.clock_out) : '<span class="badge ok">On now</span>'}</td><td>${hm(entryMs(e))}</td><td>${sqBadge(e)}</td></tr>`).join("")
       || '<tr><td colspan="5" class="muted">No punches in the last two weeks.</td></tr>'}</table></div>`;
+  // Your own hourly rate from Square. Nobody else's is ever shown.
+  fnCall("timeclock", { action: "my_rate" }).then((r) => {
+    const el = root.querySelector("#myrate"); if (!el || !r?.rates?.length) return;
+    el.innerHTML = "💵 Your rate: " + r.rates.map((x) => `<strong>${usd(x.cents / 100)}/hr</strong>${r.rates.length > 1 && x.title ? ` (${esc(x.title)})` : ""}`).join(", ");
+  }).catch(() => {});
   if (!state.profile.extra_clock) return;
   const { data: x } = await sb.from("extra_time_entries").select("*").eq("user_id", state.profile.id).gte("clock_in", since.toISOString()).order("clock_in", { ascending: false });
   const xc = (x ?? []).filter((e) => new Date(e.clock_in) >= thisWk), xp = (x ?? []).filter((e) => new Date(e.clock_in) < thisWk);
