@@ -80,7 +80,7 @@ h3 { font-size: 1.02rem; }
 
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); /* any number of icons, always one row */
+  display: flex; justify-content: space-around; /* any number of icons, always one row */
   height: calc(var(--nav-h) + env(safe-area-inset-bottom));
   padding-bottom: env(safe-area-inset-bottom);
   background: var(--surface); border-top: 2px solid var(--brass);
@@ -275,7 +275,7 @@ details.grp .grp-name { font-family: var(--display); font-size: 1.1rem; letter-s
 details.grp .grp-meta { margin-left: auto; font-size: .8rem; color: var(--muted); text-align: right; }
 details.grp > .list { padding: 0 8px 8px; }
 
-.tabbar button { min-width: 0; padding: 0 2px; }
+.tabbar button { flex: 1 1 auto; min-width: 0; padding: 0 2px; }
 .tabbar button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tabbar:has(> button:nth-child(7)) button { font-size: .6rem; letter-spacing: .02em; }
+.tabbar:has(> button:nth-child(7)) button { font-size: .58rem; letter-spacing: 0; }
 .tabbar:has(> button:nth-child(7)) button svg { width: 20px; height: 20px; }
