@@ -27,6 +27,7 @@ async function fnCall(name, body) {
 }
 const CHANNELS = ["Web", "Retail", "Commercial", "Government", "Custom"];
 const INV_CATS = ["Finished goods", "Board care", "Merch"];
+const WHOLESALE_CATS = ["Butcher blocks", "Cutting boards", "Charcuterie", "Knife blocks & rails", "Lazy Susans", "Coasters & small goods", "Other"];
 const SUPPLY_CATS = ["Abrasives", "Finish & oil", "Glue & epoxy", "Magnets", "Fasteners & hardware", "Blades & bits", "Packaging & shipping", "Engraving & branding", "PPE & safety", "Cleaning & shop", "Lumber", "Other"];
 const ORDER_METHODS = ["Website", "Phone", "Email", "Sales rep", "In person"];
 const fmtDate = (d) => (d ? new Date(d + (String(d).length === 10 ? "T12:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "");
@@ -1425,7 +1426,6 @@ async function renderWholesale(root) {
 }
 
 function editWholesale(i, all, done) {
-  const cats = [...new Set(["Cutting boards", "Butcher blocks", "Charcuterie", "Knife blocks & rails", "Coasters & small goods", ...all.map((x) => x.category).filter(Boolean)])];
   sheet(`
     <form class="stack" id="f"><h2>${i.id ? "Edit wholesale item" : "New wholesale item"}</h2>
       <div><label>Item</label><input name="name" value="${esc(i.name)}" required placeholder="Random pattern end grain 12x16"></div>
@@ -1433,7 +1433,7 @@ function editWholesale(i, all, done) {
         <img id="ph" src="${esc(i.photo_url ?? "")}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:10px;background:var(--surface-2);${i.photo_url ? "" : "display:none"}">
         <label class="btn sm" style="margin:0;color:var(--text)">${i.photo_url ? "Change photo" : "Add photo"}<input type="file" accept="image/*" capture="environment" id="photo" style="display:none"></label></div>
       <div class="grid2">
-        <div><label>Category</label><input name="category" value="${esc(i.category)}" list="whcats" required><datalist id="whcats">${cats.map((c) => `<option>${esc(c)}</option>`).join("")}</datalist></div>
+        <div><label>Category</label><select name="category" required>${WHOLESALE_CATS.map((c) => `<option ${i.category === c ? "selected" : ""}>${c}</option>`).join("")}</select></div>
         <div><label>Species / pattern</label><input name="species" value="${esc(i.species)}" placeholder="Walnut & maple, random"></div>
         <div><label>On hand</label><input name="quantity" type="number" min="0" step="1" value="${esc(i.quantity ?? 0)}" required></div>
         ${seesMoney() ? `<div><label>Wholesale price (each) 💲</label><input name="wholesale_price" type="number" step="0.01" value="${esc(i.wholesale_price)}"></div>` : ""}
