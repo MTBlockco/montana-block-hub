@@ -38,7 +38,7 @@ const daysUntil = (d) => Math.round((new Date(d + "T12:00:00") - new Date(today(
 const LOW_PRODUCTS = 9;
 const isLow = (i) => {
   const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : null);
-  return rp != null && Number(i.quantity) <= Number(rp);
+  return rp != null && Number(rp) >= 0 && Number(i.quantity) <= Number(rp); // reorder point -1 = don't track
 };
 
 function toast(msg) {
