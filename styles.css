@@ -1,51 +1,28 @@
 :root {
-  --bg: #f4ede2;
-  --surface: #fffdf8;
-  --surface-2: #efe5d5;
-  --text: #2a1f17;
-  --muted: #7d6a58;
-  --line: #e1d3bd;
-  --accent: #8a5a2b;          /* walnut */
-  --accent-ink: #fffaf2;
-  --accent-soft: #f1e2cd;
-  --brass: #b8893c;
-  --walnut-1: #3b2516;
-  --walnut-2: #4b2f1c;
-  --walnut-3: #5d3b23;
-  --ok: #3d7a4f;
-  --warn: #b7791f;
-  --bad: #b23b2e;
+  --bg: #15100c;
+  --surface: #1f1813;
+  --surface-2: #2a2019;
+  --text: #f3e9dc;
+  --muted: #ab9886;
+  --line: #3a2d23;
+  --accent: #d39b5c;          /* walnut */
+  --accent-ink: #1a120c;
+  --accent-soft: #3a2a1b;
+  --brass: #d6a85a;
+  --walnut-1: #1c120b;
+  --walnut-2: #261811;
+  --walnut-3: #332116;
+  --ok: #6cbf89;
+  --warn: #e0a84a;
+  --bad: #e2705f;
   --radius: 14px;
-  --shadow: 0 1px 2px rgba(59,37,22,.07), 0 6px 20px rgba(59,37,22,.07);
+  --shadow: none;
   --nav-h: 66px;
   --display: "Oswald", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
   --body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
   --serif: "Lora", Georgia, serif;
-  color-scheme: light;
+  color-scheme: dark; /* dark mode for everyone */
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #15100c;
-    --surface: #1f1813;
-    --surface-2: #2a2019;
-    --text: #f3e9dc;
-    --muted: #ab9886;
-    --line: #3a2d23;
-    --accent: #d39b5c;
-    --accent-ink: #1a120c;
-    --accent-soft: #3a2a1b;
-    --brass: #d6a85a;
-    --walnut-1: #1c120b;
-    --walnut-2: #261811;
-    --walnut-3: #332116;
-    --ok: #6cbf89;
-    --warn: #e0a84a;
-    --bad: #e2705f;
-    --shadow: none;
-    color-scheme: dark;
-  }
-}
-
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
 body {
