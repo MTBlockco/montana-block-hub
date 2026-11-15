@@ -1903,7 +1903,9 @@ async function renderSupplies(root) {
         <table style="margin-top:6px"><tr><th>Item</th><th>Have</th><th>At</th><th>Vendor</th></tr>${lowItems.map((i) =>
           `<tr data-open="${i.id}" style="cursor:pointer"><td>${esc(i.name)}</td><td>${Number(i.quantity)} ${esc(i.unit)}</td><td>${i.reorder_point}</td><td class="small">${esc(vName(i.supplier_id))}</td></tr>`).join("")}</table></details>` : "";
     body.innerHTML = reorderCard + Object.entries(groups).map(([cat, its]) => `
-      <h2 class="section">${esc(cat)}</h2>
+      <details class="grp" data-grp="${esc(cat)}" ${supCat !== "All" || q || grpOpen("sup", cat) ? "open" : ""}>
+      <summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">${esc(cat)}</span>
+        <span class="grp-meta">${its.length} item${its.length > 1 ? "s" : ""}${its.some(isLow) ? ` · <span class="badge warn">${its.filter(isLow).length} reorder</span>` : ""}</span></summary>
       <div class="list">${its.map((i) => `
         <div class="item hold" data-id="${i.id}">
           <div class="row between">
@@ -1918,7 +1920,8 @@ async function renderSupplies(root) {
               ${canInv() ? '<button class="btn icon sm" data-adj="1" aria-label="Add one">+</button>' : ""}
             </div>
           </div>
-        </div>`).join("")}</div>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No supplies tracked yet."}</div>`;
+        </div>`).join("")}</div></details>`).join("") || `<div class="empty">${(items ?? []).length ? "Nothing matches." : "No supplies tracked yet."}</div>`;
+    wireGroups(body, "sup");
     body.querySelector("#reorder")?.addEventListener("toggle", (e) => { try { localStorage.setItem("mb_reorder_open", e.target.open ? "1" : "0"); } catch {} });
     body.querySelectorAll("[data-open]").forEach((b) => (b.onclick = () => supplyDetail(items.find((i) => i.id === b.dataset.open), vendors ?? [], () => renderSupplies(root))));
     if (canInv()) body.querySelectorAll(".item.hold").forEach((el) => onHold(el, () => supplyActions(items.find((i) => i.id === el.dataset.id), vendors ?? [], () => renderSupplies(root))));
