@@ -1647,9 +1647,10 @@ function newAppProduct(done) {
   });
 }
 
-// Collapsible type groups. Open/closed is remembered per phone.
-const grpKey = (tab, cat) => `mb_grp_${tab}_${cat}`;
-const grpOpen = (tab, cat) => { try { return localStorage.getItem(grpKey(tab, cat)) !== "0"; } catch { return true; } };
+// Collapsible type groups. Start collapsed; a section you open stays open while you work (until the app is reopened).
+const openGroups = new Set();
+const grpKey = (tab, cat) => `${tab}|${cat}`;
+const grpOpen = (tab, cat) => openGroups.has(grpKey(tab, cat));
 function groupedList(tab, items, rowHtml, forceOpen) {
   const groups = {};
   items.forEach((i) => (groups[PRODUCT_TYPES.includes(i.category) ? i.category : i.category || "Other"] ??= []).push(i));
@@ -1663,7 +1664,7 @@ function groupedList(tab, items, rowHtml, forceOpen) {
   }).join("");
 }
 function wireGroups(root, tab) {
-  root.querySelectorAll("details.grp").forEach((d) => d.addEventListener("toggle", () => { try { localStorage.setItem(grpKey(tab, d.dataset.grp), d.open ? "1" : "0"); } catch {} }));
+  root.querySelectorAll("details.grp").forEach((d) => d.addEventListener("toggle", () => { const k = grpKey(tab, d.dataset.grp); d.open ? openGroups.add(k) : openGroups.delete(k); }));
 }
 
 function productTabs() {
