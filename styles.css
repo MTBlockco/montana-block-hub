@@ -272,3 +272,9 @@ details.collapse:not([open]) .chev { transform: rotate(-90deg); }
 #laserbar.alarm { background: #b3261e; animation: lbpulse 1s infinite; }
 @keyframes lbpulse { 50% { box-shadow: 0 0 0 8px rgba(179,38,30,.35); } }
 @media (min-width: 900px) { #laserbar { left: auto; right: 24px; bottom: 24px; width: 380px; } }
+
+details.stepdone { opacity: .8; }
+details.stepdone > summary, details.stepsdone > summary { list-style: none; cursor: pointer; }
+details.stepdone > summary::-webkit-details-marker, details.stepsdone > summary::-webkit-details-marker { display: none; }
+details.stepdone[open] { opacity: 1; }
+details.stepsdone > summary { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }

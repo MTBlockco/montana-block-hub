@@ -1184,10 +1184,13 @@ async function viewJob(j, done) {
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
     <div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">Steps</h3>${isOwner() ? '<button class="btn sm" id="arrange">Arrange steps</button>' : ""}</div>
     ${isOwner() ? '<p class="small muted" style="margin:0 0 6px">Press and hold a step to rename, move or remove it.</p>' : ""}
-    <div class="list">${(steps ?? []).map((st) => {
-      const s10 = statFor(st.name);
-      return `<div class="item${isOwner() ? " hold" : ""}" data-step="${st.id}" style="cursor:default">
-        <div class="row between"><span class="title">${(st.assignees ?? []).includes(state.profile.id) ? '<span class="badge ok">Yours</span> ' : ""}${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>
+    ${(() => {
+    // Finished steps fold into one "Done" line so only the work left is in front of you.
+    const isDone = (st) => st.done_qty >= j.quantity && mine?.step_id !== st.id;
+    const stepHtml = (st) => {
+      const s10 = statFor(st.name), done = isDone(st);
+      const head = `<div class="row between"><span class="title">${done ? "✓ " : ""}${(st.assignees ?? []).includes(state.profile.id) && !done ? '<span class="badge ok">Yours</span> ' : ""}${esc(st.name)}</span><span class="badge ${st.done_qty >= j.quantity ? "ok" : ""}">${st.done_qty}/${j.quantity}</span></div>`;
+      return `${done ? `<details class="item stepdone${isOwner() ? " hold" : ""}" data-step="${st.id}"><summary>${head}</summary>` : `<div class="item${isOwner() ? " hold" : ""}" data-step="${st.id}" style="cursor:default">${head}`}
         ${(st.assignees ?? []).length || can("lead") ? `<div class="row" style="gap:6px;margin-top:2px">${(st.assignees ?? []).length ? `<span class="small assignees">👤 ${st.assignees.map((id) => esc(nameOf(id) || "?")).join(", ")}</span>` : '<span class="small muted">👤 Anyone</span>'}
           ${can("lead") && j.status !== "Complete" ? `<button class="linkbtn small" style="float:none;color:var(--accent);font-size:.85rem;text-decoration:underline" data-stepassign="${st.id}">${(st.assignees ?? []).length ? "change" : "assign"}</button>` : ""}</div>` : ""}
         <div class="progress thin" style="margin:6px 0"><span style="width:${Math.min(100, Math.round(st.done_qty / j.quantity * 100))}%"></span></div>
@@ -1199,8 +1202,14 @@ async function viewJob(j, done) {
             <button class="btn sm" data-notes="${st.id}">💬 ${notesFor(st.id).length || ""}</button>
             ${can("lead") && j.status !== "Complete" ? `<button class="btn icon sm" data-fix="${st.id}" aria-label="Adjust count">✎</button>` : ""}
           </span></div>
-        <div class="notes" id="notes-${st.id}" style="display:none">${noteList(notesFor(st.id))}${noteForm(st.id)}</div></div>`;
-    }).join("") || '<div class="empty">No steps on this job.</div>'}</div>
+        <div class="notes" id="notes-${st.id}" style="display:none">${noteList(notesFor(st.id))}${noteForm(st.id)}</div>${done ? "</details>" : "</div>"}`;
+    };
+    const open = (steps ?? []).filter((st) => !isDone(st)), finished = (steps ?? []).filter(isDone);
+    if (!(steps ?? []).length) return '<div class="list"><div class="empty">No steps on this job.</div></div>';
+    return `<div class="list">${open.map(stepHtml).join("") || '<div class="empty">✓ Every step is done.</div>'}</div>
+      ${finished.length ? `<details class="section stepsdone"><summary class="small"><strong>✓ ${finished.length} step${finished.length > 1 ? "s" : ""} done</strong> <span class="muted">· ${finished.map((x) => esc(x.name)).join(", ")}</span></summary>
+        <div class="list" style="margin-top:6px">${finished.map(stepHtml).join("")}</div></details>` : ""}`;
+    })()}
     <h3 class="section" style="margin-bottom:4px">Job notes</h3>
     <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
     ${(timers ?? []).length ? `<details class="section"><summary class="small">Time log (${timers.length})</summary>
