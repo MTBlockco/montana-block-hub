@@ -16,6 +16,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const ROLES = ["pending", "shop", "lead", "admin", "owner"];
 const ROLE_LABEL = { pending: "Pending", shop: "Shop", lead: "Lead", admin: "Admin", owner: "Owner" };
 const can = (min) => state.profile && ROLES.indexOf(state.profile.role) >= ROLES.indexOf(min);
+const canMaterials = () => can("admin") || !!state.profile?.materials_access; // admins + Nate Lyman
 const isOwner = () => state.profile?.role === "owner";
 const canInv = () => state.profile && (state.profile.role === "owner" || state.profile.can_edit_inventory);
 const hm = (ms) => { const m = Math.max(0, Math.floor(ms / 60000)); return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`; };
@@ -111,6 +112,7 @@ const I = {
   sop: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h11l5 5v11H4z"/><path d="M15 4v5h5M8 13h8M8 17h8"/></svg>',
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
   ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
+  lumber: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="15" width="18" height="4" rx="1"/><circle cx="19" cy="7" r=".6"/><circle cx="19" cy="12" r=".6"/><circle cx="19" cy="17" r=".6"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
 
@@ -137,6 +139,7 @@ const VIEWS = {
   jobs: { label: "Jobs", icon: I.jobs, render: renderJobs },
   inventory: { label: "Products", icon: I.inv, render: renderInventory },
   supplies: { label: "Supplies", icon: I.box, render: renderSupplies },
+  materials: { label: "Lumber", icon: I.lumber, render: renderMaterialsView, show: () => canMaterials() },
   sops: { label: "SOPs", icon: I.sop, render: renderSops },
   ask: { label: "Ask", icon: I.ask, render: renderAsk },
   more: { label: "More", icon: I.more, render: renderMore },
@@ -168,7 +171,7 @@ async function start() {
   if (!profile || !profile.active || profile.role === "pending") return renderPending();
   if (profile.must_change_password) return renderChangePassword(true);
   const hash = location.hash.slice(1);
-  state.view = VIEWS[hash] ? hash : "home";
+  state.view = VIEWS[hash] && (!VIEWS[hash].show || VIEWS[hash].show()) ? hash : "home";
   renderShell();
   loadLaser();
 }
@@ -240,7 +243,8 @@ function renderChangePassword(forced) {
 
 // ---------------------------------------------------------------- shell
 function renderShell() {
-  const nav = (cls) => Object.entries(VIEWS)
+  const shown = () => Object.entries(VIEWS).filter(([, v]) => !v.show || v.show());
+  const nav = (cls) => shown()
     .map(([k, v]) => `<button data-go="${k}" class="${state.view === k ? "active" : ""}" aria-label="${v.label}">${v.icon}<span>${v.label}</span></button>`)
     .join("");
   $app.innerHTML = `
@@ -248,7 +252,7 @@ function renderShell() {
     <nav class="sidebar wood">${logoImg("logo")}${nav("sidebar")}<div class="spacer"></div>
       <div class="small who">${OFFICE ? "🖥 Office computer<br>" : ""}${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
     <main class="main" id="view"><div class="empty">Loading…</div></main>
-    <nav class="tabbar">${Object.entries(VIEWS).filter(([k]) => k !== "more").map(([k, v]) =>
+    <nav class="tabbar">${shown().filter(([k]) => k !== "more").map(([k, v]) =>
       `<button data-go="${k}" class="${state.view === k ? "active" : ""}">${v.icon}<span>${v.label}</span></button>`).join("")}</nav>
   </div>`;
   $app.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => go(b.dataset.go)));
@@ -652,10 +656,10 @@ async function renderJobs(root) {
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
-  if (["Materials", "Shopify", "Wholesale"].includes(jobFilter) && !can("lead")) jobFilter = "Active";
-  const tabs = can("lead") ? ["Active", "Complete", "Shopify", "Wholesale", "Materials"] : ["Active", "Complete"];
+  if (jobFilter === "Materials") jobFilter = "Active";
+  if (["Shopify", "Wholesale"].includes(jobFilter) && !can("lead")) jobFilter = "Active";
+  const tabs = can("lead") ? ["Active", "Complete", "Shopify", "Wholesale"] : ["Active", "Complete"];
   const chips = `<div class="chips">${tabs.map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()}${counts[f] != null ? ` <span class="small">${counts[f]}</span>` : ""}</button>`).join("")}</div>`;
-  if (jobFilter === "Materials") return renderMaterials(root, chips, jobs ?? []);
   if (jobFilter === "Shopify" || jobFilter === "Wholesale") return renderOpenOrders(root, chips, jobFilter === "Wholesale");
   root.innerHTML = `
     ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
@@ -830,6 +834,13 @@ function bfLines(needs, prices) {
   return needs.map((n) => `<div class="row between small"><span>${esc(n.material)}</span><span><strong>${fmtBF(n.bf)}</strong>${seesMoney() && prices[n.material] != null ? ` <span class="muted">· ${usd(ceilBF(n.bf) * prices[n.material])}</span>` : ""}</span></div>`).join("");
 }
 
+// Lumber / materials ordering lives on its own bottom tab: admins and Nate Lyman only.
+async function renderMaterialsView(root) {
+  if (!canMaterials()) { root.innerHTML = '<div class="empty">Not available.</div>'; return; }
+  const { data: jobs } = await sb.from("jobs").select("*").order("due_date", { ascending: true, nullsFirst: false }).order("created_at");
+  await loadProfiles();
+  return renderMaterials(root, "", jobs ?? []);
+}
 async function renderMaterials(root, chips, allJobs) {
   const { prods, recipe, ord, prices } = await loadMaterialData();
   const jobs = allJobs.filter((j) => j.status !== "Complete");
@@ -845,7 +856,7 @@ async function renderMaterials(root, chips, allJobs) {
   const totalBF = mats.reduce((a, m) => a + ceilBF(toOrder[m]), 0);
   const totalCost = mats.reduce((a, m) => a + (prices[m] != null ? ceilBF(toOrder[m]) * prices[m] : 0), 0);
   root.innerHTML = `
-    ${topbar("Jobs", seesMoney() ? '<button class="btn sm" id="recipes">Recipes &amp; prices</button>' : "")}
+    ${topbar("Lumber", seesMoney() ? '<button class="btn sm" id="recipes">Recipes &amp; prices</button>' : "")}
     ${chips}
     <div class="card" style="margin-top:12px">
       <div class="row between"><h3 style="margin:0">🪵 Lumber to order</h3>${mats.length ? '<button class="btn sm" id="copy">Copy list</button>' : ""}</div>
@@ -879,7 +890,7 @@ async function renderMaterials(root, chips, allJobs) {
     </div>`;
   wireTopbar(root);
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
-  const redo = () => renderJobs(root);
+  const redo = () => renderMaterialsView(root);
   root.querySelector("#recipes")?.addEventListener("click", () => recipesSheet(prods, recipe, prices, redo));
   root.querySelectorAll("[data-addrec]").forEach((b) => (b.onclick = () => editRecipe({ product: b.dataset.addrec }, [], redo)));
   root.querySelector("#copy")?.addEventListener("click", async () => {
@@ -1226,7 +1237,7 @@ async function viewJob(j, done) {
       ${can("lead") && j.status !== "Complete" ? '<button class="btn primary" id="complete">Mark complete</button>' : ""}
       ${can("lead") && j.status === "Complete" ? '<button class="btn" id="reopen">Reopen</button>' : ""}
     </div>`, (root, close) => {
-    fillJobMaterials(root.querySelector("#jobmat"), j);
+    if (canMaterials()) fillJobMaterials(root.querySelector("#jobmat"), j);
     root.querySelectorAll("[data-start]").forEach((b) => (b.onclick = async () => {
       const { error } = await sb.rpc("job_timer_start", { p_step: b.dataset.start });
       if (error) return toast(error.message);
