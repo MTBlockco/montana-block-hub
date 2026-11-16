@@ -290,3 +290,7 @@ details.grp > .list { padding: 0 8px 8px; }
 
 #laserothers .lb-actions { display: flex; gap: 6px; margin-top: 6px; }
 #laserothers .btn { background: rgba(255,255,255,.12); color: #fff; border-color: transparent; }
+
+.jobcard .title { font-size: 1.05rem; }
+.jobcard .pcs { font-family: var(--display); font-size: 1.35rem; font-weight: 700; color: #fff; white-space: nowrap; }
+.jobcard .pcs small { font-size: .8rem; font-weight: 500; color: var(--muted); }

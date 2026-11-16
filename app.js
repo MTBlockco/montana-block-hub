@@ -1065,20 +1065,11 @@ function tagMySteps(jobs, steps) {
 }
 const peopleLine = (j) => { const ids = jobPeople(j); return ids.length ? `<span class="assignees">👤 ${ids.map((id) => esc(nameOf(id) || "?")).join(", ")}</span>` : ""; };
 
+// Jobs list card: just the job name and piece count (everything else is inside the job).
 function jobCard(j, steps) {
-  const d = j.due_date ? daysUntil(j.due_date) : null;
-  const dueCls = d === null ? "" : d < 0 ? "bad" : d <= 2 ? "warn" : "";
-  const pct = jobProgress(j, steps), cur = currentStep(j, steps);
-  return `<div class="item${can("lead") ? " hold" : ""}${isMyJob(j) && j.status !== "Complete" ? " mine" : ""}" data-job="${j.id}">
-    <div class="row between"><span class="title">${isMyJob(j) && j.status !== "Complete" ? '<span class="badge ok">Yours</span> ' : ""}${esc(j.title)}</span>
-      ${j.status === "Complete" ? '<span class="badge ok">Complete</span>' : j.due_date ? `<span class="badge ${dueCls}">Due ${fmtDate(j.due_date)}</span>` : ""}</div>
-    ${mySteps(j).length && j.status !== "Complete" ? `<div class="small" style="margin:2px 0">🛠 Your step${mySteps(j).length > 1 ? "s" : ""}: <strong>${mySteps(j).map(esc).join(", ")}</strong></div>` : ""}
-    ${peopleLine(j) ? `<div class="small" style="margin:2px 0">${peopleLine(j)}</div>` : can("lead") && j.status !== "Complete" ? '<div class="small muted" style="margin:2px 0">👤 Not assigned · hold to assign</div>' : ""}
-    <div class="small muted">${[j.quantity + " pc", j.product, j.customer].filter(Boolean).map(esc).join(" · ")}${j.priority === "Rush" ? ' · <span class="badge bad">Rush</span>' : ""}${seesMoney() && state.cache.jobMoney?.[j.id]?.line_total != null ? ` · <strong>${usd(state.cache.jobMoney[j.id].line_total)}</strong>` : ""}</div>
-    ${j.shipped_qty != null ? `<div class="small" style="margin-top:2px">📦 Sent: <strong>${j.shipped_qty}</strong> of ${j.quantity}${j.shipped_at ? " on " + fmtDate(j.shipped_at) : ""}
-      ${seesMoney() ? (state.cache.jobMoney?.[j.id]?.billed_at ? ' <span class="badge ok">Billed</span>' : ' <span class="badge warn">Ready to bill</span>') : ""}</div>` : ""}
-    ${j.status !== "Complete" && steps.length ? `<div class="progress" style="margin-top:6px"><span style="width:${pct}%"></span></div>
-      <div class="small muted" style="margin-top:2px">${pct}%${cur ? ` · Now: ${esc(cur.name)} (${cur.done_qty}/${j.quantity})` : " · All steps done"}</div>` : ""}
+  return `<div class="item jobcard${can("lead") ? " hold" : ""}" data-job="${j.id}">
+    <div class="row between" style="gap:10px"><span class="title">${esc(j.title)}</span>
+      <span class="pcs">${j.quantity ?? 1}<small> pcs</small></span></div>
   </div>`;
 }
 
