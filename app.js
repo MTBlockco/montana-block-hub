@@ -1220,9 +1220,12 @@ async function viewJob(j, done) {
   sheet(`
     <div class="row between"><span class="badge ${j.status === "Complete" ? "ok" : ""}">${j.status === "Complete" ? "Complete" : "Active"}</span><button class="btn sm" data-close>Close</button></div>
     <h1 class="jv-title">${esc(j.title)}</h1>
+    <div class="row between jv-people">${peopleLine(j) || '<span class="muted">👤 Not assigned</span>'}${can("lead") ? '<button class="btn sm" id="assign">Assign</button>' : ""}</div>
+    <details class="grp jv-details"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">Job details</span>
+      <span class="grp-meta">${j.quantity} pcs${j.due_date ? ` · <span class="badge ${daysUntil(j.due_date) < 0 ? "bad" : daysUntil(j.due_date) <= 2 ? "warn" : ""}">Due ${fmtDate(j.due_date)}</span>` : ""}</span></summary>
+    <div style="padding:0 12px 12px">
     <div class="jv-pcs">${j.quantity} pieces</div>
     ${j.due_date ? `<div class="jv-due"><span class="badge ${daysUntil(j.due_date) < 0 ? "bad" : daysUntil(j.due_date) <= 2 ? "warn" : ""}">Due ${fmtDate(j.due_date)}</span></div>` : ""}
-    <div class="row between jv-people">${peopleLine(j) || '<span class="muted">👤 Not assigned</span>'}${can("lead") ? '<button class="btn sm" id="assign">Assign</button>' : ""}</div>
     ${j.product || j.customer || j.channel || j.notes ? `<details class="jv-more"><summary class="small muted">More info</summary>
       <p class="small muted" style="margin:4px 0 0">${[j.product, j.customer, j.channel].filter(Boolean).map(esc).join(" · ")}</p>
       ${j.notes ? `<p class="small" style="white-space:pre-wrap;margin:4px 0 0">${esc(j.notes)}</p>` : ""}</details>` : ""}
@@ -1239,6 +1242,7 @@ async function viewJob(j, done) {
     <div id="jobmat"></div>
     <div class="progress" style="margin:10px 0 4px"><span style="width:${pct}%"></span></div>
     <div class="row between small muted"><span>${pct}% done</span><span>Total labor logged: ${fmtMin(totalMin)}</span></div>
+    </div></details>
     ${running.length ? `<p class="small" style="margin:6px 0 0">⏱ On it now: ${running.map((t) => esc(nameOf(t.user_id)) + " (" + esc((steps ?? []).find((s) => s.id === t.step_id)?.name ?? "") + ")").join(", ")}</p>` : ""}
     <div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">Steps</h3>${isOwner() ? '<button class="btn sm" id="arrange">Arrange steps</button>' : ""}</div>
     ${isOwner() ? '<p class="small muted" style="margin:0 0 6px">Press and hold a step to rename, move or remove it.</p>' : ""}

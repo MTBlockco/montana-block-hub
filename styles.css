@@ -294,3 +294,6 @@ details.grp > .list { padding: 0 8px 8px; }
 .jobcard .title { font-size: 1.05rem; }
 .jobcard .pcs { font-family: var(--display); font-size: 1.35rem; font-weight: 700; color: #fff; white-space: nowrap; }
 .jobcard .pcs small { font-size: .8rem; font-weight: 500; color: var(--muted); }
+
+.jv-details { margin-top: 10px; }
+.jv-people { font-size: .9rem; }
