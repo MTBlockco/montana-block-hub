@@ -279,3 +279,11 @@ details.grp > .list { padding: 0 8px 8px; }
 .tabbar button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tabbar:has(> button:nth-child(7)) button { font-size: .58rem; letter-spacing: 0; }
 .tabbar:has(> button:nth-child(7)) button svg { width: 20px; height: 20px; }
+
+#laserothers { position: fixed; left: 12px; right: 12px; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 59; display: flex; flex-direction: column; gap: 4px; }
+#laserothers.stacked { bottom: calc(76px + 112px + env(safe-area-inset-bottom)); }
+#laserothers .lo-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; background: var(--walnut-2); color: #fff;
+  border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+#laserothers .lo-time { font-family: var(--display); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#laserothers .lo-row.done { background: #b3261e; }
+@media (min-width: 900px) { #laserothers { left: auto; right: 24px; bottom: 24px; width: 380px; } #laserothers.stacked { bottom: 150px; } }

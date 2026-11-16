@@ -356,13 +356,42 @@ async function loadLaser() {
   const { data } = await sb.from("laser_runs").select("*, laser_programs(*), jobs(title), job_steps(name)").eq("user_id", state.profile.id).eq("status", "running").order("started_at", { ascending: false }).limit(1).maybeSingle();
   state.laser = data ? { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) } : null;
   laserLoop();
+  loadLaserOthers();
+  if (!loadLaser.poll) loadLaser.poll = setInterval(loadLaserOthers, 15000);
 }
+// Everyone sees every laser run in progress (time left), not just their own.
+async function loadLaserOthers() {
+  if (!state.profile || document.visibilityState === "hidden") return;
+  if (!state.cache.profiles) await loadProfiles();
+  const { data } = await sb.from("laser_runs").select("id, user_id, started_at, planned_seconds, laser_programs(name), jobs(title)")
+    .eq("status", "running").neq("user_id", state.profile.id).order("started_at");
+  state.laserOthers = data ?? [];
+  renderLaserOthers();
+}
+let othersTimer = null;
+function renderLaserOthers() {
+  clearInterval(othersTimer);
+  let box = document.getElementById("laserothers");
+  if (!(state.laserOthers ?? []).length) { box?.remove(); return; }
+  if (!box) { box = document.createElement("div"); box.id = "laserothers"; document.body.appendChild(box); }
+  box.classList.toggle("stacked", !!state.laser);
+  box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span><span class="lo-time"></span></div>`).join("");
+  const tick = () => state.laserOthers.forEach((r) => {
+    const el = box.querySelector(`[data-lo="${r.id}"]`); if (!el) return;
+    const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
+    el.querySelector(".lo-time").textContent = left > 0 ? mmss(left) + " left" : `DONE +${mmss(-left)}`;
+    el.classList.toggle("done", left <= 0);
+  });
+  tick(); othersTimer = setInterval(tick, 1000);
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.profile) loadLaserOthers(); });
 function sessionGet(jobId) { try { return localStorage.getItem("mb_laser_pcs_" + jobId) ?? 0; } catch { return 0; } }
 function sessionSet(jobId, n) { try { n ? localStorage.setItem("mb_laser_pcs_" + jobId, String(n)) : localStorage.removeItem("mb_laser_pcs_" + jobId); } catch {} }
 
 function laserLoop() {
   clearInterval(laserTimer);
   let bar = document.getElementById("laserbar");
+  document.getElementById("laserothers")?.classList.toggle("stacked", !!state.laser);
   if (!state.laser) { bar?.remove(); stopAlarm(); releaseWake(); return; }
   if (!bar) { bar = document.createElement("div"); bar.id = "laserbar"; document.body.appendChild(bar); }
   const r = state.laser.run, p = r.laser_programs ?? {};
