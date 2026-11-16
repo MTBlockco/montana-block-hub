@@ -51,13 +51,32 @@ function toast(msg) {
   setTimeout(() => t.remove(), 2400);
 }
 
+// Phone back button closes the top panel (sheet or photo viewer) instead of leaving the app.
+// Each panel adds a history step. Closing with a button leaves that step behind; the back button skips over those.
+const overlays = [];
+function trackOverlay(removeFn) {
+  const entry = { removeFn, open: true };
+  overlays.push(entry);
+  history.pushState({ overlay: true }, "");
+  return () => {
+    if (!entry.open) return;
+    entry.open = false; removeFn();
+    const i = overlays.indexOf(entry); if (i >= 0) overlays.splice(i, 1);
+  };
+}
+addEventListener("popstate", (e) => {
+  const top = overlays.pop();
+  if (top) { top.open = false; top.removeFn(); return; }
+  if (e.state?.overlay) history.back(); // a panel already closed with its button: keep going back
+});
+
 function sheet(html, onMount) {
   const bg = document.createElement("div");
   bg.className = "sheet-bg";
   bg.innerHTML = `<div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
-  bg.addEventListener("click", (e) => { if (e.target === bg) bg.remove(); });
   document.body.appendChild(bg);
-  const close = () => bg.remove();
+  const close = trackOverlay(() => bg.remove());
+  bg.addEventListener("click", (e) => { if (e.target === bg) close(); });
   bg.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", close));
   onMount?.(bg.querySelector(".sheet"), close);
   return close;
@@ -2389,7 +2408,7 @@ function photoViewer(p, list = [p]) {
   const up = (e) => { pts.delete(e.pointerId); if (pts.size === 1) last = { ...[...pts.values()][0] }; if (!pts.size) last = null; };
   ["pointerup", "pointercancel"].forEach((ev) => stage.addEventListener(ev, up));
   stage.addEventListener("wheel", (e) => { e.preventDefault(); zoomAt(s * (e.deltaY < 0 ? 1.2 : 1 / 1.2), e.clientX, e.clientY); }, { passive: false });
-  const close = () => { d.remove(); document.removeEventListener("keydown", key); };
+  const close = trackOverlay(() => { d.remove(); document.removeEventListener("keydown", key); });
   const key = (e) => { if (e.key === "Escape") close(); if (e.key === "ArrowRight" && list.length > 1) { idx = (idx + 1) % list.length; show(); } if (e.key === "ArrowLeft" && list.length > 1) { idx = (idx - 1 + list.length) % list.length; show(); } };
   document.addEventListener("keydown", key);
   d.querySelector("#vclose").onclick = close;
