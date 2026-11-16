@@ -417,12 +417,13 @@ async function enablePush() {
     }
     const k = sub.toJSON().keys;
     const { error } = await sb.from("push_subscriptions").upsert({ endpoint: sub.endpoint, user_id: state.profile.id, p256dh: k.p256dh, auth: k.auth });
-    return error ? "error" : "ok";
-  } catch (e) { console.error(e); return "error"; }
+    if (error) { enablePush.lastError = "save: " + error.message; return "error"; }
+    return "ok";
+  } catch (e) { console.error(e); enablePush.lastError = (e?.name ? e.name + ": " : "") + (e?.message ?? String(e)); return "error"; }
 }
 const pushHelp = (r) => r === "unsupported"
   ? (/iPhone|iPad/.test(navigator.userAgent) ? "To get laser alerts on a locked iPhone, add the app to the Home Screen (Share → Add to Home Screen) and open it from there." : "This browser can't do lock-screen alerts.")
-  : r === "denied" ? "Notifications are blocked for this app. Turn them on in the phone's settings to get alerts on a locked phone." : r === "error" ? "Couldn't turn on lock-screen alerts. Keep the app open." : "";
+  : r === "denied" ? "Notifications are blocked for this app. Turn them on in the phone's settings to get alerts on a locked phone." : r === "error" ? `Couldn't turn on alerts on this browser${enablePush.lastError ? ` (${enablePush.lastError})` : ""}. Chrome, Edge or Safari (iPhone home-screen app) work best.` : "";
 
 async function laserStartRun(program, j, step) {
   laserAudio ??= (() => { try { return new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } })(); // unlock sound on this tap
