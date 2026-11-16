@@ -391,6 +391,37 @@ async function loadLaserOthers() {
   }
   renderLaserOthers();
 }
+// Desktop (Chrome / Edge / Opera): a small always-on-top window with the live laser countdown that stays up
+// even when the hub is minimized or another program is in front. Phones use the lock-screen notification instead.
+const canPopOut = () => "documentPictureInPicture" in window;
+let pipWin = null, pipTimer = null;
+async function popOutLaser() {
+  if (!canPopOut()) return toast("Pop-out works in Chrome, Edge or Opera on a computer.");
+  try {
+    if (!pipWin || pipWin.closed) {
+      pipWin = await documentPictureInPicture.requestWindow({ width: 320, height: 150 });
+      pipWin.document.head.innerHTML = `<style>
+        body{margin:0;font-family:Oswald,"Arial Narrow",Arial,sans-serif;background:#15100c;color:#f3e9dc;display:flex;flex-direction:column;gap:6px;padding:10px}
+        .r{background:#261811;border-radius:12px;padding:8px 12px}.r.done{background:#b3261e;animation:p 1s infinite}
+        .n{font-family:Inter,Arial,sans-serif;font-size:13px;opacity:.9}.t{font-size:38px;font-variant-numeric:tabular-nums;line-height:1.1}
+        .e{font-family:Inter,Arial,sans-serif;font-size:13px;opacity:.7;padding:20px;text-align:center}@keyframes p{50%{opacity:.75}}</style>`;
+      pipWin.addEventListener("pagehide", () => { clearInterval(pipTimer); pipWin = null; });
+    }
+    clearInterval(pipTimer);
+    const draw = () => {
+      if (!pipWin || pipWin.closed) return clearInterval(pipTimer);
+      const runs = [...(state.laser ? [{ ...state.laser.run, user_id: state.profile.id }] : []), ...(state.laserOthers ?? [])];
+      pipWin.document.body.innerHTML = runs.length ? runs.map((r) => {
+        const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
+        return `<div class="r ${left <= 0 ? "done" : ""}"><div class="n">🔦 ${esc((nameOf(r.user_id) || "").split(" ")[0])} · ${esc(r.laser_programs?.name ?? "Laser")}</div>
+          <div class="t">${left > 0 ? mmss(left) : "DONE +" + mmss(-left)}</div></div>`;
+      }).join("") : '<div class="e">Laser is idle.</div>';
+      pipWin.document.title = runs.length ? "Laser timer" : "Laser idle";
+    };
+    draw(); pipTimer = setInterval(draw, 1000);
+  } catch (e) { toast("Couldn't pop out the timer: " + (e.message ?? e)); }
+}
+
 let othersTimer = null;
 function renderLaserOthers() {
   clearInterval(othersTimer);
@@ -401,7 +432,8 @@ function renderLaserOthers() {
   box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><div class="lb-top">
       <span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}'s laser</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span>
       <span class="lb-time lo-time"></span></div>
-      ${can("admin") ? `<div class="lb-actions"><button class="btn sm" data-loclear="${r.id}">✕ Clear this timer</button></div>` : ""}</div>`).join("");
+      ${can("admin") || canPopOut() ? `<div class="lb-actions">${canPopOut() ? '<button class="btn sm" data-lopop>⧉ Pop out</button>' : ""}${can("admin") ? `<button class="btn sm" data-loclear="${r.id}">✕ Clear this timer</button>` : ""}</div>` : ""}</div>`).join("");
+  box.querySelectorAll("[data-lopop]").forEach((b) => (b.onclick = popOutLaser));
   box.querySelectorAll("[data-loclear]").forEach((b) => (b.onclick = async () => {
     if (!confirm("Clear this laser timer? The run won't be counted.")) return;
     const { error } = await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", b.dataset.loclear).eq("status", "running");
@@ -428,7 +460,8 @@ function laserLoop() {
   if (!bar) { bar = document.createElement("div"); bar.id = "laserbar"; document.body.appendChild(bar); }
   const r = state.laser.run, p = r.laser_programs ?? {};
   bar.innerHTML = `<div class="lb-top"><span class="small">🔦 ${esc(p.name ?? "Laser")} · ${esc(r.jobs?.title ?? "")}</span><span class="lb-time" id="lbtime"></span></div>
-    <div class="lb-actions"><button class="btn sm primary" id="lbreload">🔁 Reloaded – next run</button><button class="btn sm" id="lbdone">✓ Done</button><button class="btn sm" id="lbstop" title="Stop without counting this run">✕</button></div>`;
+    <div class="lb-actions"><button class="btn sm primary" id="lbreload">🔁 Reloaded – next run</button><button class="btn sm" id="lbdone">✓ Done</button><button class="btn sm" id="lbstop" title="Stop without counting this run">✕</button>${canPopOut() ? '<button class="btn sm" id="lbpop" title="Pop the timer out into its own window">⧉ Pop out</button>' : ""}</div>`;
+  bar.querySelector("#lbpop")?.addEventListener("click", popOutLaser);
   bar.querySelector("#lbreload").onclick = () => laserFinish(true);
   bar.querySelector("#lbdone").onclick = () => laserFinish(false);
   bar.querySelector("#lbstop").onclick = laserStop;
@@ -487,6 +520,7 @@ const pushHelp = (r) => r === "unsupported"
   : r === "denied" ? "Notifications are blocked for this app. Turn them on in the phone's settings to get alerts on a locked phone." : r === "error" ? `Couldn't turn on alerts on this browser${enablePush.lastError ? ` (${enablePush.lastError})` : ""}. Chrome, Edge or Safari (iPhone home-screen app) work best.` : "";
 
 async function laserStartRun(program, j, step) {
+  if (canPopOut() && matchMedia("(min-width: 900px)").matches) popOutLaser();
   laserAudio ??= (() => { try { return new (window.AudioContext || window.webkitAudioContext)(); } catch { return null; } })(); // unlock sound on this tap
   try { laserAudio?.resume?.(); } catch {}
   enablePush().then((r) => { if (r !== "ok") toast(pushHelp(r)); });

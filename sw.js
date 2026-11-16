@@ -1,6 +1,6 @@
 // Service worker: makes the hub installable and keeps the app shell available offline.
 // Data always comes live from the server; only the static files are cached.
-const CACHE = "mb-hub-v60";
+const CACHE = "mb-hub-v61";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "sayings.js", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -34,9 +34,11 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: "Montana Block Hub", body: e.data?.text() }; }
+  const quiet = !!d.silent;
   e.waitUntil(self.registration.showNotification(d.title || "Montana Block Hub", {
-    body: d.body || "", tag: d.tag || "hub", renotify: true, requireInteraction: true,
-    vibrate: [400, 200, 400, 200, 800], icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: d.url || "./" },
+    body: d.body || "", tag: d.tag || "hub", renotify: !quiet, silent: quiet, requireInteraction: d.sticky !== false,
+    vibrate: quiet ? undefined : [400, 200, 400, 200, 800], timestamp: d.timestamp || Date.now(),
+    icon: "icons/icon-192.png", badge: "icons/icon-192.png", data: { url: d.url || "./" },
   }));
 });
 self.addEventListener("notificationclick", (e) => {
