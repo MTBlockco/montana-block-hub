@@ -287,3 +287,6 @@ details.grp > .list { padding: 0 8px 8px; }
 #laserothers .lb-time { font-family: var(--display); font-size: 1.6rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
 #laserothers .lo-row.done { background: #b3261e; animation: lbpulse 1s infinite; }
 @media (min-width: 900px) { #laserothers { left: auto; right: 24px; bottom: 24px; width: 380px; } #laserothers.stacked { bottom: 160px; } }
+
+#laserothers .lb-actions { display: flex; gap: 6px; margin-top: 6px; }
+#laserothers .btn { background: rgba(255,255,255,.12); color: #fff; border-color: transparent; }

@@ -366,6 +366,10 @@ async function loadLaserOthers() {
   const { data } = await sb.from("laser_runs").select("id, user_id, started_at, planned_seconds, laser_programs(name), jobs(title)")
     .eq("status", "running").neq("user_id", state.profile.id).order("started_at");
   state.laserOthers = data ?? [];
+  if (state.laser) { // someone (or an admin) cleared my run elsewhere
+    const { data: mine } = await sb.from("laser_runs").select("status").eq("id", state.laser.run.id).maybeSingle();
+    if (!mine || mine.status !== "running") { state.laser = null; laserLoop(); }
+  }
   renderLaserOthers();
 }
 let othersTimer = null;
@@ -377,7 +381,14 @@ function renderLaserOthers() {
   box.classList.toggle("stacked", !!state.laser);
   box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><div class="lb-top">
       <span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}'s laser</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span>
-      <span class="lb-time lo-time"></span></div></div>`).join("");
+      <span class="lb-time lo-time"></span></div>
+      ${can("admin") ? `<div class="lb-actions"><button class="btn sm" data-loclear="${r.id}">✕ Clear this timer</button></div>` : ""}</div>`).join("");
+  box.querySelectorAll("[data-loclear]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Clear this laser timer? The run won't be counted.")) return;
+    const { error } = await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", b.dataset.loclear).eq("status", "running");
+    if (error) return toast(error.message);
+    log("clear_laser_run", "laser_run", b.dataset.loclear); toast("Timer cleared"); loadLaserOthers();
+  }));
   const tick = () => state.laserOthers.forEach((r) => {
     const el = box.querySelector(`[data-lo="${r.id}"]`); if (!el) return;
     const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
@@ -462,7 +473,7 @@ async function laserStartRun(program, j, step) {
   enablePush().then((r) => { if (r !== "ok") toast(pushHelp(r)); });
   const { data, error } = await sb.from("laser_runs").insert({ program_id: program.id, job_id: j?.id ?? null, step_id: step?.id ?? null, planned_seconds: program.run_seconds })
     .select("*, laser_programs(*), jobs(title), job_steps(name)").single();
-  if (error) return toast(error.message);
+  if (error) { loadLaserOthers(); return toast(/one_laser_run|duplicate/i.test(error.message) ? "The laser is already running. Only one run at a time." : error.message); }
   state.laser = { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) };
   stopAlarm(); laserLoop();
 }
@@ -470,8 +481,9 @@ async function laserFinish(next) {
   const L = state.laser; if (!L) return;
   stopAlarm();
   const r = L.run, ppr = r.laser_programs?.pieces_per_run ?? 0;
-  const { error } = await sb.from("laser_runs").update({ status: "done", ended_at: new Date().toISOString(), pieces: ppr }).eq("id", r.id);
+  const { data: upd, error } = await sb.from("laser_runs").update({ status: "done", ended_at: new Date().toISOString(), pieces: ppr }).eq("id", r.id).eq("status", "running").select("id");
   if (error) return toast(error.message);
+  if (!upd?.length) { state.laser = null; laserLoop(); return toast("That run was already cleared. Start a new one from the job."); }
   const total = L.session + ppr; sessionSet(r.job_id, total);
   if (next) return laserStartRun(r.laser_programs, { id: r.job_id }, { id: r.step_id });
   state.laser = null; laserLoop();
@@ -491,6 +503,7 @@ async function laserStop() {
 }
 
 async function laserSheet(j, step, after) {
+  await loadLaserOthers();
   const [{ data: programs }, { data: stats }] = await Promise.all([
     sb.from("laser_programs").select("*").eq("active", true).order("name"),
     sb.from("laser_program_stats").select("*"),
@@ -502,10 +515,11 @@ async function laserSheet(j, step, after) {
   sheet(`<div class="stack">
     <div class="row between"><h2 style="margin:0">🔦 Laser timer</h2><button class="btn sm" data-close>Close</button></div>
     <p class="small muted" style="margin:0">${esc(j.title)} · ${esc(step?.name ?? "Engrave")}</p>
-    ${state.laser ? `<div class="card" style="padding:10px">A run is already going: <strong>${esc(state.laser.run.laser_programs?.name ?? "")}</strong>. Use the bar at the bottom of the screen.</div>` : ""}
+    ${state.laser ? `<div class="card" style="padding:10px">A run is already going: <strong>${esc(state.laser.run.laser_programs?.name ?? "")}</strong>. Use the bar at the bottom of the screen.</div>`
+      : (state.laserOthers ?? []).length ? `<div class="card" style="padding:10px">🔦 The laser is busy: <strong>${esc((nameOf(state.laserOthers[0].user_id) || "Someone").split(" ")[0])}</strong> is running ${esc(state.laserOthers[0].laser_programs?.name ?? "a program")}. One run at a time.</div>` : ""}
     ${list.length ? `<div><label>Laser program</label><select id="lp">${list.map((p) => `<option value="${p.id}" ${p.id === last ? "selected" : ""}>${esc(p.name)}${p.product ? " · " + esc(p.product) : ""}</option>`).join("")}</select></div>
       <div class="card" id="lpinfo" style="padding:10px"></div>
-      <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
+      <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser || (state.laserOthers ?? []).length ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
     : `<p class="muted">No laser programs yet. Add the first one: how long a run takes and how many pieces it does.</p><button class="btn primary" id="lpnew">+ New program</button>`}
     <p class="small muted" style="margin:0">When the run time is up, everyone who turned on notifications gets an alert, even on a locked phone, repeating every 1½ minutes until you tap <strong>Reloaded</strong> or <strong>Done</strong>. Your phone also beeps if the app is open.</p>
   </div>`, (root, close) => {
