@@ -371,26 +371,22 @@ const mmss = (sec) => { sec = Math.max(0, Math.round(sec)); const h = Math.floor
 const parseMmss = (v) => { const p = String(v).trim().split(":").map(Number); if (p.some(isNaN)) return NaN; return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p.length === 2 ? p[0] * 60 + p[1] : p[0] * 60; };
 let laserTimer = null, laserAudio = null, laserBeep = null, wakeLock = null;
 
+// One laser, one shared timer. Everyone sees it and anyone can tap Reloaded / Done / Stop, whoever started it.
 async function loadLaser() {
-  const { data } = await sb.from("laser_runs").select("*, laser_programs(*), jobs(title), job_steps(name)").eq("user_id", state.profile.id).eq("status", "running").order("started_at", { ascending: false }).limit(1).maybeSingle();
-  state.laser = data ? { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) } : null;
-  laserLoop();
-  loadLaserOthers();
-  if (!loadLaser.poll) loadLaser.poll = setInterval(loadLaserOthers, 15000);
-}
-// Everyone sees every laser run in progress (time left), not just their own.
-async function loadLaserOthers() {
-  if (!state.profile || document.visibilityState === "hidden") return;
+  if (!state.profile) return;
   if (!state.cache.profiles) await loadProfiles();
-  const { data } = await sb.from("laser_runs").select("id, user_id, started_at, planned_seconds, laser_programs(name), jobs(title)")
-    .eq("status", "running").neq("user_id", state.profile.id).order("started_at");
-  state.laserOthers = data ?? [];
-  if (state.laser) { // someone (or an admin) cleared my run elsewhere
-    const { data: mine } = await sb.from("laser_runs").select("status").eq("id", state.laser.run.id).maybeSingle();
-    if (!mine || mine.status !== "running") { state.laser = null; laserLoop(); }
+  const { data } = await sb.from("laser_runs").select("*, laser_programs(*), jobs(title), job_steps(name)")
+    .eq("status", "running").order("started_at", { ascending: false }).limit(1).maybeSingle();
+  const prev = state.laser;
+  if (!data) { if (prev) { state.laser = null; laserLoop(); } }
+  else if (!prev || prev.run.id !== data.id) { state.laser = { run: data, alarmed: false }; laserLoop(); }
+  if (!loadLaser.poll) {
+    loadLaser.poll = setInterval(() => document.visibilityState !== "hidden" && loadLaser(), 15000);
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { loadLaser(); if (state.laser) keepAwake(); } });
   }
-  renderLaserOthers();
 }
+const loadLaserOthers = loadLaser; // older callers
+
 // Desktop (Chrome / Edge / Opera): a small always-on-top window with the live laser countdown that stays up
 // even when the hub is minimized or another program is in front. Phones use the lock-screen notification instead.
 const canPopOut = () => "documentPictureInPicture" in window;
@@ -399,9 +395,9 @@ async function popOutLaser() {
   if (!canPopOut()) return toast("Pop-out works in Chrome, Edge or Opera on a computer.");
   try {
     if (!pipWin || pipWin.closed) {
-      pipWin = await documentPictureInPicture.requestWindow({ width: 320, height: 150 });
+      pipWin = await documentPictureInPicture.requestWindow({ width: 320, height: 130 });
       pipWin.document.head.innerHTML = `<style>
-        body{margin:0;font-family:Oswald,"Arial Narrow",Arial,sans-serif;background:#15100c;color:#f3e9dc;display:flex;flex-direction:column;gap:6px;padding:10px}
+        body{margin:0;font-family:Oswald,"Arial Narrow",Arial,sans-serif;background:#15100c;color:#f3e9dc;padding:10px}
         .r{background:#261811;border-radius:12px;padding:8px 12px}.r.done{background:#b3261e;animation:p 1s infinite}
         .n{font-family:Inter,Arial,sans-serif;font-size:13px;opacity:.9}.t{font-size:38px;font-variant-numeric:tabular-nums;line-height:1.1}
         .e{font-family:Inter,Arial,sans-serif;font-size:13px;opacity:.7;padding:20px;text-align:center}@keyframes p{50%{opacity:.75}}</style>`;
@@ -410,69 +406,39 @@ async function popOutLaser() {
     clearInterval(pipTimer);
     const draw = () => {
       if (!pipWin || pipWin.closed) return clearInterval(pipTimer);
-      const runs = [...(state.laser ? [{ ...state.laser.run, user_id: state.profile.id }] : []), ...(state.laserOthers ?? [])];
-      pipWin.document.body.innerHTML = runs.length ? runs.map((r) => {
-        const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
-        return `<div class="r ${left <= 0 ? "done" : ""}"><div class="n">🔦 ${esc((nameOf(r.user_id) || "").split(" ")[0])} · ${esc(r.laser_programs?.name ?? "Laser")}</div>
-          <div class="t">${left > 0 ? mmss(left) : "DONE +" + mmss(-left)}</div></div>`;
-      }).join("") : '<div class="e">Laser is idle.</div>';
-      pipWin.document.title = runs.length ? "Laser timer" : "Laser idle";
+      const r = state.laser?.run;
+      if (!r) { pipWin.document.body.innerHTML = '<div class="e">Laser is idle.</div>'; pipWin.document.title = "Laser idle"; return; }
+      const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
+      pipWin.document.body.innerHTML = `<div class="r ${left <= 0 ? "done" : ""}"><div class="n">🔦 ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? " · " + esc(r.jobs.title) : ""}</div>
+        <div class="t">${left > 0 ? mmss(left) : "DONE +" + mmss(-left)}</div></div>`;
+      pipWin.document.title = left > 0 ? mmss(left) + " · laser" : "LASER DONE";
     };
     draw(); pipTimer = setInterval(draw, 1000);
   } catch (e) { toast("Couldn't pop out the timer: " + (e.message ?? e)); }
 }
 
-let othersTimer = null;
-function renderLaserOthers() {
-  clearInterval(othersTimer);
-  let box = document.getElementById("laserothers");
-  if (!(state.laserOthers ?? []).length) { box?.remove(); return; }
-  if (!box) { box = document.createElement("div"); box.id = "laserothers"; document.body.appendChild(box); }
-  box.classList.toggle("stacked", !!state.laser);
-  box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><div class="lb-top">
-      <span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}'s laser</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span>
-      <span class="lb-time lo-time"></span></div>
-      ${can("admin") || canPopOut() ? `<div class="lb-actions">${canPopOut() ? '<button class="btn sm" data-lopop>⧉ Pop out</button>' : ""}${can("admin") ? `<button class="btn sm" data-loclear="${r.id}">✕ Clear this timer</button>` : ""}</div>` : ""}</div>`).join("");
-  box.querySelectorAll("[data-lopop]").forEach((b) => (b.onclick = popOutLaser));
-  box.querySelectorAll("[data-loclear]").forEach((b) => (b.onclick = async () => {
-    if (!confirm("Clear this laser timer? The run won't be counted.")) return;
-    const { error } = await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", b.dataset.loclear).eq("status", "running");
-    if (error) return toast(error.message);
-    log("clear_laser_run", "laser_run", b.dataset.loclear); toast("Timer cleared"); loadLaserOthers();
-  }));
-  const tick = () => state.laserOthers.forEach((r) => {
-    const el = box.querySelector(`[data-lo="${r.id}"]`); if (!el) return;
-    const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
-    el.querySelector(".lo-time").textContent = left > 0 ? mmss(left) : `DONE +${mmss(-left)}`;
-    el.classList.toggle("done", left <= 0);
-  });
-  tick(); othersTimer = setInterval(tick, 1000);
-}
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.profile) loadLaserOthers(); });
-function sessionGet(jobId) { try { return localStorage.getItem("mb_laser_pcs_" + jobId) ?? 0; } catch { return 0; } }
-function sessionSet(jobId, n) { try { n ? localStorage.setItem("mb_laser_pcs_" + jobId, String(n)) : localStorage.removeItem("mb_laser_pcs_" + jobId); } catch {} }
-
 function laserLoop() {
   clearInterval(laserTimer);
+  document.getElementById("laserothers")?.remove();
   let bar = document.getElementById("laserbar");
-  document.getElementById("laserothers")?.classList.toggle("stacked", !!state.laser);
   if (!state.laser) { bar?.remove(); stopAlarm(); releaseWake(); return; }
   if (!bar) { bar = document.createElement("div"); bar.id = "laserbar"; document.body.appendChild(bar); }
   const r = state.laser.run, p = r.laser_programs ?? {};
-  bar.innerHTML = `<div class="lb-top"><span class="small">🔦 ${esc(p.name ?? "Laser")} · ${esc(r.jobs?.title ?? "")}</span><span class="lb-time" id="lbtime"></span></div>
-    <div class="lb-actions"><button class="btn sm primary" id="lbreload">🔁 Reloaded – next run</button><button class="btn sm" id="lbdone">✓ Done</button><button class="btn sm" id="lbstop" title="Stop without counting this run">✕</button>${canPopOut() ? '<button class="btn sm" id="lbpop" title="Pop the timer out into its own window">⧉ Pop out</button>' : ""}</div>`;
+  const who = r.user_id === state.profile.id ? "Your run" : `${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}'s run`;
+  bar.innerHTML = `<div class="lb-top"><span class="small">🔦 <strong>${who}</strong> · ${esc(p.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span><span class="lb-time" id="lbtime"></span></div>
+    <div class="lb-actions"><button class="btn sm primary" id="lbreload">🔁 Reloaded – next run</button><button class="btn sm" id="lbdone">✓ Done</button><button class="btn sm" id="lbstop" title="Stop without counting this run">✕ Stop</button>${canPopOut() ? '<button class="btn sm" id="lbpop" title="Pop the timer out into its own window">⧉ Pop out</button>' : ""}</div>`;
   bar.querySelector("#lbpop")?.addEventListener("click", popOutLaser);
   bar.querySelector("#lbreload").onclick = () => laserFinish(true);
   bar.querySelector("#lbdone").onclick = () => laserFinish(false);
   bar.querySelector("#lbstop").onclick = laserStop;
-  keepAwake();
+  if (!OFFICE) keepAwake();
   const tick = () => {
     if (!state.laser) return;
     const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
     const t = document.getElementById("lbtime");
     if (t) t.textContent = left > 0 ? mmss(left) : `DONE +${mmss(-left)}`;
     bar.classList.toggle("alarm", left <= 0);
-    if (left <= 0 && !state.laser.alarmed) { state.laser.alarmed = true; startAlarm(p.name); }
+    if (left <= 0 && !state.laser.alarmed) { state.laser.alarmed = true; if (!OFFICE) startAlarm(p.name); }
   };
   tick(); laserTimer = setInterval(tick, 1000);
 }
@@ -526,9 +492,10 @@ async function laserStartRun(program, j, step) {
   enablePush().then((r) => { if (r !== "ok") toast(pushHelp(r)); });
   const { data, error } = await sb.from("laser_runs").insert({ program_id: program.id, job_id: j?.id ?? null, step_id: step?.id ?? null, planned_seconds: program.run_seconds })
     .select("*, laser_programs(*), jobs(title), job_steps(name)").single();
-  if (error) { loadLaserOthers(); return toast(/one_laser_run|duplicate/i.test(error.message) ? "The laser is already running. Only one run at a time." : error.message); }
-  state.laser = { run: data, alarmed: false, session: Number(sessionGet(data.job_id)) };
+  if (error) { loadLaser(); toast(/one_laser_run|duplicate/i.test(error.message) ? "The laser is already running. Use the timer bar at the bottom." : error.message); return false; }
+  state.laser = { run: data, alarmed: false };
   stopAlarm(); laserLoop();
+  return true;
 }
 async function laserFinish(next) {
   const L = state.laser; if (!L) return;
@@ -536,27 +503,31 @@ async function laserFinish(next) {
   const r = L.run, ppr = r.laser_programs?.pieces_per_run ?? 0;
   const { data: upd, error } = await sb.from("laser_runs").update({ status: "done", ended_at: new Date().toISOString(), pieces: ppr }).eq("id", r.id).eq("status", "running").select("id");
   if (error) return toast(error.message);
-  if (!upd?.length) { state.laser = null; laserLoop(); return toast("That run was already cleared. Start a new one from the job."); }
-  const total = L.session + ppr; sessionSet(r.job_id, total);
-  if (next) return laserStartRun(r.laser_programs, { id: r.job_id }, { id: r.step_id });
   state.laser = null; laserLoop();
-  if (r.step_id && total > 0 && confirm(`${total} pieces engraved this session. Add them to the ${r.job_steps?.name ?? "Engrave"} step on ${r.jobs?.title ?? "the job"}?`)) {
+  if (!upd?.length) { loadLaser(); return toast("Someone else already ended that run."); }
+  if (next) { if (await laserStartRun(r.laser_programs, { id: r.job_id }, { id: r.step_id })) toast("Next run started"); return; }
+  // Done: offer to count every finished run on this step that hasn't been added yet (whoever ran them).
+  if (!r.step_id) return;
+  const { data: runs } = await sb.from("laser_runs").select("id, pieces").eq("step_id", r.step_id).eq("status", "done").eq("counted", false);
+  const total = (runs ?? []).reduce((a, x) => a + Number(x.pieces ?? 0), 0);
+  if (total > 0 && confirm(`${total} pieces engraved (${runs.length} run${runs.length > 1 ? "s" : ""}). Add them to the ${r.job_steps?.name ?? "Engrave"} step on ${r.jobs?.title ?? "the job"}?`)) {
     const { data: st } = await sb.from("job_steps").select("done_qty").eq("id", r.step_id).single();
     if (st) await sb.from("job_steps").update({ done_qty: Number(st.done_qty) + total }).eq("id", r.step_id);
     toast(`Added ${total} pieces`);
   }
-  sessionSet(r.job_id, 0);
+  if ((runs ?? []).length) await sb.from("laser_runs").update({ counted: true }).in("id", runs.map((x) => x.id));
 }
 async function laserStop() {
   const L = state.laser; if (!L) return;
-  if (!confirm("Stop this run without counting it?")) return;
+  if (!confirm("Stop this laser run without counting it?")) return;
   stopAlarm();
-  await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", L.run.id);
+  await sb.from("laser_runs").update({ status: "stopped", ended_at: new Date().toISOString() }).eq("id", L.run.id).eq("status", "running");
+  log("stop_laser_run", "laser_run", L.run.id);
   state.laser = null; laserLoop();
 }
 
 async function laserSheet(j, step, after) {
-  await loadLaserOthers();
+  await loadLaser();
   const [{ data: programs }, { data: stats }] = await Promise.all([
     sb.from("laser_programs").select("*").eq("active", true).order("name"),
     sb.from("laser_program_stats").select("*"),
@@ -568,11 +539,10 @@ async function laserSheet(j, step, after) {
   sheet(`<div class="stack">
     <div class="row between"><h2 style="margin:0">🔦 Laser timer</h2><button class="btn sm" data-close>Close</button></div>
     <p class="small muted" style="margin:0">${esc(j.title)} · ${esc(step?.name ?? "Engrave")}</p>
-    ${state.laser ? `<div class="card" style="padding:10px">A run is already going: <strong>${esc(state.laser.run.laser_programs?.name ?? "")}</strong>. Use the bar at the bottom of the screen.</div>`
-      : (state.laserOthers ?? []).length ? `<div class="card" style="padding:10px">🔦 The laser is busy: <strong>${esc((nameOf(state.laserOthers[0].user_id) || "Someone").split(" ")[0])}</strong> is running ${esc(state.laserOthers[0].laser_programs?.name ?? "a program")}. One run at a time.</div>` : ""}
+    ${state.laser ? `<div class="card" style="padding:10px">🔦 The laser is running <strong>${esc(state.laser.run.laser_programs?.name ?? "a program")}</strong>. Use the timer bar at the bottom: anyone can tap Reloaded, Done or Stop. One run at a time.</div>` : ""}
     ${list.length ? `<div><label>Laser program</label><select id="lp">${list.map((p) => `<option value="${p.id}" ${p.id === last ? "selected" : ""}>${esc(p.name)}${p.product ? " · " + esc(p.product) : ""}</option>`).join("")}</select></div>
       <div class="card" id="lpinfo" style="padding:10px"></div>
-      <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser || (state.laserOthers ?? []).length ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
+      <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
     : `<p class="muted">No laser programs yet. Add the first one: how long a run takes and how many pieces it does.</p><button class="btn primary" id="lpnew">+ New program</button>`}
     <p class="small muted" style="margin:0">When the run time is up, everyone who turned on notifications gets an alert, even on a locked phone, repeating every 1½ minutes until you tap <strong>Reloaded</strong> or <strong>Done</strong>. Your phone also beeps if the app is open.</p>
   </div>`, (root, close) => {
@@ -588,7 +558,7 @@ async function laserSheet(j, step, after) {
     root.querySelector("#lpstart")?.addEventListener("click", async () => {
       const p = cur(); if (!p) return;
       try { localStorage.setItem("mb_laser_prog_" + j.id, p.id); } catch {}
-      close(); await laserStartRun(p, j, step); toast("Laser run started");
+      close(); if (await laserStartRun(p, j, step)) toast("Laser run started");
     });
     root.querySelector("#lpedit")?.addEventListener("click", () => { close(); laserProgramForm(cur(), j, () => laserSheet(j, step, after)); });
     root.querySelector("#lpnew")?.addEventListener("click", () => { close(); laserProgramForm({}, j, () => laserSheet(j, step, after)); });
