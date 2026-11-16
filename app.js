@@ -375,11 +375,13 @@ function renderLaserOthers() {
   if (!(state.laserOthers ?? []).length) { box?.remove(); return; }
   if (!box) { box = document.createElement("div"); box.id = "laserothers"; document.body.appendChild(box); }
   box.classList.toggle("stacked", !!state.laser);
-  box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span><span class="lo-time"></span></div>`).join("");
+  box.innerHTML = state.laserOthers.map((r) => `<div class="lo-row" data-lo="${r.id}"><div class="lb-top">
+      <span class="small">🔦 <strong>${esc((nameOf(r.user_id) || "Someone").split(" ")[0])}'s laser</strong> · ${esc(r.laser_programs?.name ?? "Laser")}${r.jobs?.title ? ` · ${esc(r.jobs.title)}` : ""}</span>
+      <span class="lb-time lo-time"></span></div></div>`).join("");
   const tick = () => state.laserOthers.forEach((r) => {
     const el = box.querySelector(`[data-lo="${r.id}"]`); if (!el) return;
     const left = r.planned_seconds - (Date.now() - new Date(r.started_at)) / 1000;
-    el.querySelector(".lo-time").textContent = left > 0 ? mmss(left) + " left" : `DONE +${mmss(-left)}`;
+    el.querySelector(".lo-time").textContent = left > 0 ? mmss(left) : `DONE +${mmss(-left)}`;
     el.classList.toggle("done", left <= 0);
   });
   tick(); othersTimer = setInterval(tick, 1000);
@@ -505,7 +507,7 @@ async function laserSheet(j, step, after) {
       <div class="card" id="lpinfo" style="padding:10px"></div>
       <div class="row wrap"><button class="btn primary" id="lpstart" ${state.laser ? "disabled" : ""}>▶ Start run</button><button class="btn" id="lpedit">✎ Edit program</button><button class="btn" id="lpnew">+ New program</button></div>`
     : `<p class="muted">No laser programs yet. Add the first one: how long a run takes and how many pieces it does.</p><button class="btn primary" id="lpnew">+ New program</button>`}
-    <p class="small muted" style="margin:0">When the run time is up you get an alert on this phone, even locked, and it repeats every 1½ minutes until you tap <strong>Reloaded</strong> or <strong>Done</strong>. If the app is open it also beeps.</p>
+    <p class="small muted" style="margin:0">When the run time is up, everyone who turned on notifications gets an alert, even on a locked phone, repeating every 1½ minutes until you tap <strong>Reloaded</strong> or <strong>Done</strong>. Your phone also beeps if the app is open.</p>
   </div>`, (root, close) => {
     const sel = root.querySelector("#lp");
     const cur = () => list.find((p) => p.id === sel?.value);

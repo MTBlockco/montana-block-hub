@@ -24,10 +24,13 @@ Deno.serve(async (req) => {
     const { data: claimed } = await service.from("laser_runs").update({ notified_at: new Date().toISOString(), notify_count: r.notify_count + 1 })
       .eq("id", r.id).eq("notify_count", r.notify_count).select("id");
     if (!claimed?.length) continue;
-    const { data: subs } = await service.from("push_subscriptions").select("*").eq("user_id", r.user_id);
+    // Everyone who turned on notifications hears it, so whoever is closest can reload the laser.
+    const { data: subs } = await service.from("push_subscriptions").select("*");
+    const { data: who } = await service.from("profiles").select("full_name").eq("id", r.user_id).single();
+    const first = (who?.full_name ?? "").split(" ")[0];
     const late = Math.round((now - (new Date(r.started_at).getTime() + r.planned_seconds * 1000)) / 60000);
     const payload = JSON.stringify({
-      title: r.notify_count ? `Laser still waiting${late ? ` (${late} min)` : ""}` : "Laser run done",
+      title: (r.notify_count ? `Laser still waiting${late ? ` (${late} min)` : ""}` : "Laser run done") + (first ? ` · ${first}'s run` : ""),
       body: `${(r as any).laser_programs?.name ?? "Laser"}${(r as any).jobs?.title ? " · " + (r as any).jobs.title : ""}: reload the machine`,
       tag: "laser-" + r.id, url: "./#jobs",
     });
