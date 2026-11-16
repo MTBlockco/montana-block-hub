@@ -2538,6 +2538,8 @@ async function renderAccount(root) {
   root.innerHTML = `<div class="card stack">
     <div><div class="title" style="font-weight:700">${esc(p.full_name || p.email)}</div>
       <div class="small muted">${esc(p.email)} · ${ROLE_LABEL[p.role]}${p.title ? " · " + esc(p.title) : ""}</div></div>
+    <div class="card" style="padding:10px;margin:0"><div class="row between"><span>🔔 Notifications <span class="small muted" id="nstate"></span></span><button class="btn sm primary" id="notif">Turn on</button></div>
+      <p class="small muted" style="margin:4px 0 0">Lets this phone or computer get alerts (like the laser being done), even when it's locked.</p></div>
     <div class="row wrap"><button class="btn" id="pw">Change password</button><button class="btn" id="out">Sign out</button>
       ${OFFICE ? '<button class="btn" id="leaveoffice">Turn off office mode</button>' : ""}</div>
     ${OFFICE ? '<p class="small muted" style="margin:0">This computer is in office mode: no time clock or job timers. It stays signed in until someone taps Sign out.</p>' : ""}
@@ -2545,6 +2547,19 @@ async function renderAccount(root) {
   </div>`;
   root.querySelector("#pw").onclick = () => renderChangePassword(false);
   root.querySelector("#out").onclick = () => sb.auth.signOut();
+  const nState = () => {
+    const el = root.querySelector("#nstate"), btn = root.querySelector("#notif");
+    const p = "Notification" in window ? Notification.permission : "unsupported";
+    el.textContent = p === "granted" ? "· on" : p === "denied" ? "· blocked" : p === "unsupported" ? "· not available here" : "· off";
+    btn.textContent = p === "granted" ? "Send test" : "Turn on";
+  };
+  nState();
+  root.querySelector("#notif").onclick = async () => {
+    const r = await enablePush(); nState();
+    if (r !== "ok") return toast(pushHelp(r));
+    try { (await navigator.serviceWorker.ready).showNotification("Montana Block Hub", { body: "Notifications are on for this device. 👍", tag: "test" }); } catch {}
+    toast("Notifications are on");
+  };
   root.querySelector("#leaveoffice")?.addEventListener("click", () => { location.href = location.pathname + "?office=0"; });
 }
 
