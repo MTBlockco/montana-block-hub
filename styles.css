@@ -250,10 +250,13 @@ details.collapse:not([open]) .chev { transform: rotate(-90deg); }
 @keyframes lbpulse { 50% { box-shadow: 0 0 0 8px rgba(179,38,30,.35); } }
 @media (min-width: 900px) { #laserbar { left: auto; right: 24px; bottom: 24px; width: 380px; } }
 
-details.stepdone { opacity: .8; }
+details.stepdone { border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 8%, var(--surface)); }
+details.stepdone > summary .title, details.stepdone .donetotal { color: var(--ok); font-weight: 700; }
+details.stepdone .donetotal small { font-weight: 500; }
+details.stepdone > summary .grp-arrow { display: inline-block; transition: transform .15s; font-size: .8em; }
+details.stepdone[open] > summary .grp-arrow { transform: rotate(90deg); }
 details.stepdone > summary, details.stepsdone > summary { list-style: none; cursor: pointer; }
 details.stepdone > summary::-webkit-details-marker, details.stepsdone > summary::-webkit-details-marker { display: none; }
-details.stepdone[open] { opacity: 1; }
 details.stepsdone > summary { padding: 8px 10px; border-radius: 10px; background: var(--surface-2); }
 
 .jv-title { font-size: 1.7rem; line-height: 1.15; margin: 10px 0 6px; }
@@ -297,3 +300,4 @@ details.grp > .list { padding: 0 8px 8px; }
 
 .jv-details { margin-top: 10px; }
 .jv-people { font-size: .9rem; }
+details.stepdone .progress > span { background: var(--ok); }
