@@ -1969,7 +1969,7 @@ async function renderSupplies(root) {
       <div class="list">${(vendors ?? []).map((v) => {
         const n = (items ?? []).filter((i) => i.supplier_id === v.id);
         return `<div class="item" data-v="${v.id}"><div class="row between"><span class="title">${esc(v.name)}</span><span class="badge">${n.length} item${n.length === 1 ? "" : "s"}</span></div>
-          <div class="small muted">${[v.order_method, v.contact_name, v.phone, v.email, v.website, v.lead_time_days ? v.lead_time_days + "-day lead time" : ""].filter(Boolean).map(esc).join(" · ")}</div>
+          <div class="small muted">${[v.order_method, v.contact_name, v.phone, v.email, v.email2, v.website, v.lead_time_days ? v.lead_time_days + "-day lead time" : ""].filter(Boolean).map(esc).join(" · ")}</div>
           ${n.length ? `<div class="small" style="margin-top:4px">${n.map((i) => esc(i.name)).join(", ")}</div>` : ""}</div>`;
       }).join("") || '<div class="empty">No vendors yet.</div>'}</div>`;
     body.querySelector("#newv")?.addEventListener("click", () => editVendor({}, () => renderSupplies(root)));
@@ -2097,7 +2097,7 @@ function supplyDetail(i, vendors, done) {
       <tr><th>On hand</th><td>${Number(i.quantity)} ${esc(i.unit)} ${isLow(i) ? '<span class="badge warn">Reorder</span>' : ""}</td></tr>
       ${i.reorder_point != null ? `<tr><th>Reorder at</th><td>${i.reorder_point} ${esc(i.unit)}${i.reorder_qty ? ` · order ${i.reorder_qty}` : ""}</td></tr>` : ""}
       ${i.location ? `<tr><th>Where</th><td>${esc(i.location)}</td></tr>` : ""}
-      ${v ? `<tr><th>Vendor</th><td><strong>${esc(v.name)}</strong>${i.vendor_sku ? ` · #${esc(i.vendor_sku)}` : ""}<br><span class="small muted">${[v.order_method, v.phone, v.email].filter(Boolean).map(esc).join(" · ")}</span>${v.website ? `<br><a href="${esc(v.website.startsWith("http") ? v.website : "https://" + v.website)}" target="_blank" rel="noopener">${esc(v.website)}</a>` : ""}</td></tr>` : ""}
+      ${v ? `<tr><th>Vendor</th><td><strong>${esc(v.name)}</strong>${i.vendor_sku ? ` · #${esc(i.vendor_sku)}` : ""}<br><span class="small muted">${[v.order_method, v.phone, v.email, v.email2].filter(Boolean).map(esc).join(" · ")}</span>${v.website ? `<br><a href="${esc(v.website.startsWith("http") ? v.website : "https://" + v.website)}" target="_blank" rel="noopener">${esc(v.website)}</a>` : ""}</td></tr>` : ""}
       ${i.pack_size ? `<tr><th>Comes in</th><td>${esc(i.pack_size)}</td></tr>` : ""}
       ${seesMoney() && i.unit_cost != null ? `<tr><th>Last price 💲</th><td>${money(i.unit_cost)} / ${esc(i.unit)}</td></tr>` : ""}
       ${seesMoney() && i.price_notes ? `<tr><th>Price history 💲</th><td class="small">${esc(i.price_notes)}</td></tr>` : ""}
@@ -2290,6 +2290,7 @@ async function editVendor(v = {}, done) {
         <div><label>Contact / rep</label><input name="contact_name" value="${esc(v.contact_name)}"></div>
         <div><label>Phone</label><input name="phone" type="tel" value="${esc(v.phone)}"></div>
         <div><label>Email</label><input name="email" type="email" value="${esc(v.email)}"></div>
+        <div><label>Secondary email</label><input name="email2" type="email" value="${esc(v.email2)}"></div>
         <div><label>Our account #</label><input name="account_number" value="${esc(v.account_number)}"></div>
         <div><label>Lead time (days)</label><input name="lead_time_days" type="number" value="${esc(v.lead_time_days)}"></div>
       </div>
@@ -2879,7 +2880,7 @@ async function renderSuppliers(root) {
   const { data } = await sb.from("suppliers").select("*").order("name");
   root.innerHTML = `<div class="row between"><h2>Suppliers</h2>${can("admin") ? '<button class="btn sm primary" id="new">+ Supplier</button>' : ""}</div>
     <div class="list">${(data ?? []).map((s) => `<div class="item" data-s="${s.id}"><div class="title">${esc(s.name)}</div>
-      <div class="small muted">${[s.contact_name, s.phone, s.email, s.lead_time_days ? s.lead_time_days + " day lead time" : ""].filter(Boolean).map(esc).join(" · ")}</div>
+      <div class="small muted">${[s.contact_name, s.phone, s.email, s.email2, s.lead_time_days ? s.lead_time_days + " day lead time" : ""].filter(Boolean).map(esc).join(" · ")}</div>
       ${s.notes ? `<div class="small">${esc(s.notes)}</div>` : ""}</div>`).join("") || '<div class="empty">No suppliers yet.</div>'}</div>`;
   const edit = (s = {}) => sheet(`
     <form class="stack" id="f"><h2>${s.id ? "Edit supplier" : "New supplier"}</h2>
@@ -2888,6 +2889,7 @@ async function renderSuppliers(root) {
         <div><label>Contact</label><input name="contact_name" value="${esc(s.contact_name)}"></div>
         <div><label>Phone</label><input name="phone" value="${esc(s.phone)}"></div>
         <div><label>Email</label><input name="email" type="email" value="${esc(s.email)}"></div>
+        <div><label>Secondary email</label><input name="email2" type="email" value="${esc(s.email2)}"></div>
         <div><label>Lead time (days)</label><input name="lead_time_days" type="number" value="${esc(s.lead_time_days)}"></div>
       </div>
       <div><label>Website</label><input name="website" value="${esc(s.website)}"></div>
