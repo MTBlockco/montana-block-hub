@@ -733,8 +733,8 @@ async function renderJobs(root) {
   else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
   if (jobFilter === "Materials") jobFilter = "Active";
-  if (["Shopify", "Wholesale"].includes(jobFilter) && !can("lead")) jobFilter = "Active";
-  const tabs = can("lead") ? ["Active", "Complete", "Shopify", "Wholesale"] : ["Active", "Complete"];
+  const tabs = ["Active", "Complete", "Shopify", "Wholesale"]; // shop employees only see orders assigned to them
+  if (!tabs.includes(jobFilter)) jobFilter = "Active";
   const chips = `<div class="chips">${tabs.map((f) => `<button class="chip ${f === jobFilter ? "active" : ""}" data-f="${f}">${f.toUpperCase()}${counts[f] != null ? ` <span class="small">${counts[f]}</span>` : ""}</button>`).join("")}</div>`;
   if (jobFilter === "Shopify" || jobFilter === "Wholesale") return renderOpenOrders(root, chips, jobFilter === "Wholesale");
   root.innerHTML = `
@@ -803,11 +803,13 @@ const normName = (s) => String(s ?? "").toLowerCase().replace(/^wholesale\s*[-�
 async function loadOpenOrders(force) {
   const c = state.cache.openOrders;
   if (!force && c && Date.now() - c.at < 120000) return c;
-  const [res, { data: inv }] = await Promise.all([
+  const [res, { data: inv }, { data: asg }] = await Promise.all([
     fnCall("shopify-inventory", { action: "open_orders" }),
     sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id").in("source", ["shopify", "wholesale", "product"]),
+    sb.from("order_assignments").select("*"),
   ]);
-  const out = { at: Date.now(), error: res?.error ?? null, orders: res?.orders ?? [], inv: inv ?? [] };
+  const assign = Object.fromEntries((asg ?? []).map((a) => [a.shopify_order_id, a]));
+  const out = { at: Date.now(), error: res?.error ?? null, orders: res?.orders ?? [], inv: inv ?? [], assign };
   if (!out.error) state.cache.openOrders = out;
   return out;
 }
@@ -827,14 +829,15 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     root.querySelector("#refresh")?.addEventListener("click", () => renderOpenOrders(root, chips, wholesale, true));
   };
   wire();
-  const { error, orders, inv } = await loadOpenOrders(force);
+  const { error, orders, inv, assign } = await loadOpenOrders(force);
   if (error) {
     root.innerHTML = `${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}${chips}
       <div class="card" style="margin-top:12px"><strong>Can't read Shopify orders yet.</strong>
       <p class="small muted" style="margin:6px 0 0">${/access denied/i.test(error) ? "The hub's Shopify app needs permission to read orders. Mitchell is switching it on." : esc(error)}</p></div>`;
     wireTopbar(root); return wire();
   }
-  const list = orders.filter((o) => !!o.wholesale === wholesale);
+  const isMine = (o) => (assign[o.id]?.assignees ?? []).includes(state.profile.id);
+  const list = orders.filter((o) => !!o.wholesale === wholesale).sort((a, b) => Number(isMine(b)) - Number(isMine(a)));
   // Add up what's ordered per product, then compare to stock.
   const need = {};
   list.forEach((o) => o.lines.forEach((l) => {
@@ -865,20 +868,97 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     <h3 class="section" style="margin-bottom:4px">Open ${wholesale ? "wholesale" : "website"} orders</h3>
     <div class="list">${list.map((o) => {
       const d = age(o.created_at);
-      return `<div class="item" style="cursor:default">
-        <div class="row between"><span class="title">${esc(o.name)} · ${esc(o.customer || "")}</span>
+      const a = assign[o.id], who = (a?.assignees ?? []).map(nameOf).filter(Boolean);
+      return `<div class="item" data-order="${esc(o.id)}">
+        <div class="row between"><span class="title">${isMine(o) ? '<span class="badge ok">Yours</span> ' : ""}${esc(o.name)} · ${esc(o.customer || "")}</span>
           <span class="badge ${d >= 10 ? "bad" : d >= 5 ? "warn" : ""}">${d === 0 ? "Today" : d + "d old"}</span></div>
+        <div class="row between small" style="margin-top:2px"><span class="${who.length ? "assignees" : "muted"}">👤 ${who.length ? who.map(esc).join(", ") : "Not assigned"}</span>${a && a.status !== "Not started" ? `<span class="badge ${a.status === "Ready to ship" ? "ok" : "warn"}">${esc(a.status)}</span>` : ""}</div>
         <div class="small muted">${fmtDate(o.created_at.slice(0, 10))}${o.status === "PARTIALLY_FULFILLED" ? " · partly shipped" : ""}${o.pickup ? " · Local pickup" : ""}</div>
         ${o.lines.map((l) => `<div class="row between small" style="margin-top:4px"><span>${l.qty} × ${esc(l.title)}${l.variant ? ` <span class="muted">(${esc(l.variant)})</span>` : ""}</span>
           <span class="muted">${l._stock == null ? "" : l._stock >= l.qty ? "✓ on shelf" : `${Math.max(0, l._stock)} on shelf`}</span></div>`).join("")}
         ${o.note ? `<div class="small muted" style="margin-top:4px;white-space:pre-wrap">📝 ${esc(o.note)}</div>` : ""}
       </div>`;
-    }).join("") || '<div class="empty">Nothing waiting to ship.</div>'}</div>`;
+    }).join("") || `<div class="empty">${can("lead") ? "Nothing waiting to ship." : "No orders assigned to you right now."}</div>`}</div>`;
   wireTopbar(root); wire();
+  const reload = () => { state.cache.openOrders = null; renderOpenOrders(root, chips, wholesale, true); };
+  root.querySelectorAll("[data-order]").forEach((el) => (el.onclick = () => viewOrder(list.find((o) => o.id === el.dataset.order), assign[el.dataset.order], wholesale, reload)));
   root.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => {
     const r = rows[Number(b.dataset.build)];
     editJob({ title: `${wholesale ? "Wholesale" : "Web"} – ${r.name}`, product: r.name, quantity: r.short, customer: wholesale ? [...r.orders].join(", ") : "Website orders", channel: wholesale ? "Retail" : "Web" }, () => { jobFilter = "Active"; renderJobs(root); });
   }));
+}
+
+// One Shopify order: what's on it, what's on the shelf, who's on it and where it's at. No prices.
+const ORDER_STATUSES = ["Not started", "In progress", "Ready to ship"];
+function viewOrder(o, a, wholesale, done) {
+  if (!o) return;
+  const who = (a?.assignees ?? []).map(nameOf).filter(Boolean);
+  const mine = (a?.assignees ?? []).includes(state.profile.id);
+  const canStatus = !OFFICE && (can("lead") || mine);
+  const status = a?.status ?? "Not started";
+  const numericId = String(o.id).split("/").pop();
+  const d = Math.floor((Date.now() - new Date(o.created_at)) / 864e5);
+  sheet(`
+    <div class="row between"><span class="badge ${d >= 10 ? "bad" : d >= 5 ? "warn" : ""}">${d === 0 ? "Ordered today" : d + " days old"}</span><button class="btn sm" data-close>Close</button></div>
+    <h1 class="jv-title">${esc(o.name)}</h1>
+    <div class="small muted">${esc(o.customer || "")}${o.customer ? " · " : ""}${fmtDate(o.created_at.slice(0, 10))}${wholesale ? " · Wholesale" : " · Website"}</div>
+    <div class="small" style="margin-top:4px">🚚 ${o.pickup ? "<strong>Local pickup</strong>" : esc(o.shipping || "Shipping")}${o.status === "PARTIALLY_FULFILLED" ? ' · <span class="badge warn">Partly shipped</span>' : ""}</div>
+    <div class="row between jv-people" style="margin-top:10px">${who.length ? `<span class="assignees">👤 ${who.map(esc).join(", ")}</span>` : '<span class="muted">👤 Not assigned</span>'}${can("lead") && !OFFICE ? '<button class="btn sm" id="oassign">Assign</button>' : ""}</div>
+    <div class="section"><label>Status</label>
+      ${canStatus ? `<div class="chips" id="ostatus">${ORDER_STATUSES.map((x) => `<button class="chip ${x === status ? "active" : ""}" data-s="${x}">${x}</button>`).join("")}</div>`
+        : `<span class="badge ${status === "Ready to ship" ? "ok" : status === "In progress" ? "warn" : ""}">${esc(status)}</span>`}</div>
+    <h3 class="section" style="margin-bottom:4px">Items to ship</h3>
+    <div class="list">${o.lines.map((l) => `<div class="item" style="cursor:default"><div class="row between">
+      <span class="title">${l.qty} × ${esc(l.title)}${l.variant ? ` <span class="muted">(${esc(l.variant)})</span>` : ""}</span>
+      <span class="small ${l._stock == null ? "muted" : l._stock >= l.qty ? "" : "error"}">${l._stock == null ? "not tracked" : l._stock >= l.qty ? "✓ on shelf" : `${Math.max(0, l._stock)} on shelf`}</span></div>
+      ${l.sku ? `<div class="small muted">SKU ${esc(l.sku)}</div>` : ""}</div>`).join("")}</div>
+    ${o.note ? `<h3 class="section" style="margin-bottom:4px">Order note</h3><div class="card small" style="white-space:pre-wrap">${esc(o.note)}</div>` : ""}
+    <div class="row wrap section">
+      ${can("lead") && !OFFICE ? '<button class="btn" id="ojob">+ Job from this order</button>' : ""}
+      ${can("admin") ? `<a class="btn" href="https://admin.shopify.com/store/brittany-316/orders/${esc(numericId)}" target="_blank" rel="noopener">Open in Shopify ↗</a>` : ""}
+    </div>
+    ${a?.updated_by ? `<p class="small muted">Last updated by ${esc(nameOf(a.updated_by))} · ${new Date(a.updated_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}`,
+  (root, close) => {
+    root.querySelector("#oassign")?.addEventListener("click", () => { close(); assignOrder(o, a, done); });
+    root.querySelectorAll("#ostatus [data-s]").forEach((b) => (b.onclick = async () => {
+      const row = { shopify_order_id: o.id, order_name: o.name, status: b.dataset.s };
+      const { error } = a ? await sb.from("order_assignments").update({ status: b.dataset.s }).eq("shopify_order_id", o.id)
+        : await sb.from("order_assignments").insert(row);
+      if (error) return toast(error.message);
+      log("order_status", "order", null, { order: o.name, status: b.dataset.s });
+      toast(`${o.name}: ${b.dataset.s}`); close(); done?.();
+    }));
+    root.querySelector("#ojob")?.addEventListener("click", () => {
+      close();
+      const lines = o.lines.map((l) => `${l.qty} × ${l.title}${l.variant ? ` (${l.variant})` : ""}`).join("\n");
+      const one = o.lines.length === 1 ? o.lines[0] : null;
+      editJob({ title: `${o.name} – ${o.customer || (wholesale ? "Wholesale" : "Web order")}`, product: one ? one.title : "", quantity: one ? one.qty : o.lines.reduce((t, l) => t + Number(l.qty), 0),
+        customer: o.customer || "", channel: wholesale ? "Retail" : "Web", notes: `Shopify order ${o.name}\n${lines}${o.note ? "\n\nOrder note: " + o.note : ""}` },
+        () => { jobFilter = "Active"; done?.(); });
+    });
+  });
+}
+
+// Leads and up: pick who's working a Shopify order. Shop employees then see it in their SHOPIFY / WHOLESALE tab.
+function assignOrder(o, a, done) {
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/shipping room|office|guest/i.test(p.full_name ?? ""));
+  const on = new Set(a?.assignees ?? []);
+  sheet(`<form class="stack" id="oa">
+    <h2 style="margin:0">Assign: ${esc(o.name)}</h2>
+    <p class="small muted" style="margin:0">${esc(o.customer || "")} · pick everyone working this order. It shows up as theirs in the app.</p>
+    <div class="list">${people.map((p) => `<label class="item row between" style="cursor:pointer"><span class="title">${esc(p.full_name || p.email)}</span>
+      <input type="checkbox" name="p_${p.id}" ${on.has(p.id) ? "checked" : ""} style="width:22px;height:22px"></label>`).join("")}</div>
+    <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (root, close) => {
+    root.querySelector("#oa").onsubmit = async (e) => {
+      e.preventDefault();
+      const ids = people.filter((p) => root.querySelector(`[name="p_${p.id}"]`).checked).map((p) => p.id);
+      const { error } = await sb.from("order_assignments").upsert({ shopify_order_id: o.id, order_name: o.name, assignees: ids, status: a?.status ?? "Not started" }, { onConflict: "shopify_order_id" });
+      if (error) return toast(error.message);
+      log("assign_order", "order", null, { order: o.name, people: ids.map(nameOf) });
+      toast(ids.length ? `${o.name}: ${ids.map(nameOf).join(", ")}` : `${o.name}: unassigned`); close(); done?.();
+    };
+  });
 }
 
 // ---------------------------------------------------------------- Materials (lumber to order per job)

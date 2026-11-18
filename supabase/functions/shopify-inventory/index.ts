@@ -123,7 +123,7 @@ async function openOrders() {
       out.push({
         id: n.id, name: n.name, created_at: n.createdAt, status: n.displayFulfillmentStatus,
         customer: n.shippingAddress?.company || n.billingAddress?.company || n.shippingAddress?.name || n.billingAddress?.name || "",
-        pickup: /pickup/i.test(n.shippingLine?.title ?? ""), note: n.note ?? null, wholesale, lines,
+        pickup: /pickup/i.test(n.shippingLine?.title ?? ""), shipping: n.shippingLine?.title ?? null, note: n.note ?? null, wholesale, lines,
       });
     }
     after = o.pageInfo.hasNextPage ? o.pageInfo.endCursor : null;
@@ -152,9 +152,18 @@ Deno.serve(async (req) => {
     const { data: { user } } = await userClient.auth.getUser();
     if (!user) return json({ error: "Not signed in" }, 401);
     const { data: p } = await service.from("profiles").select("role, active, can_edit_inventory").eq("id", user.id).single();
-    // Open orders (read-only, no prices) are for leads and up.
-    if (body.action === "open_orders" && p?.active && ["lead", "admin", "owner"].includes(p.role)) {
-      try { return json({ ok: true, orders: await openOrders() }); } catch (e) { return json({ error: (e as Error).message }, 502); }
+    // Open orders (read-only, no prices): leads and up see all; shop employees see only orders assigned to them.
+    if (body.action === "open_orders" && p?.active && ["shop", "lead", "admin", "owner"].includes(p.role)) {
+      try {
+        let orders = await openOrders();
+        // The shipping-room computer (office@) sees every order; other shop employees see the ones assigned to them.
+        if (p.role === "shop" && (user.email ?? "").toLowerCase() !== "office@mtblock.com") {
+          const { data: mine } = await service.from("order_assignments").select("shopify_order_id").contains("assignees", [user.id]);
+          const ids = new Set((mine ?? []).map((m) => m.shopify_order_id));
+          orders = orders.filter((o) => ids.has(o.id as string));
+        }
+        return json({ ok: true, orders });
+      } catch (e) { return json({ error: (e as Error).message }, 502); }
     }
     if (!p || !p.active || !(p.role === "owner" || p.can_edit_inventory)) {
       return json({ error: "Only people Mitchell has given inventory access can change inventory." }, 403);
