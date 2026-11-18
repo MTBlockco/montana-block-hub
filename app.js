@@ -307,12 +307,14 @@ const nameOf = (id) => state.cache.profiles?.find((p) => p.id === id)?.full_name
 
 // ---------------------------------------------------------------- Home
 async function renderHome(root) {
-  const [ann, jobs, mine] = await Promise.all([
+  const [ann, jobs, mine, myOrd] = await Promise.all([
     sb.from("announcements").select("*").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(20),
     sb.from("jobs").select("*").neq("status", "Complete").order("due_date", { ascending: true, nullsFirst: false }),
     sb.from("job_steps").select("job_id, name, assignees").contains("assignees", [state.profile.id]),
+    OFFICE ? { data: [] } : sb.from("order_assignments").select("*").contains("assignees", [state.profile.id]),
   ]);
   tagMySteps(jobs.data, mine.data);
+  const myOrders = myOrd.data ?? [];
   await loadProfiles();
   const first = (state.profile.full_name || "").split(" ")[0];
   const hour = Number(new Date().toLocaleString("en-US", { timeZone: "America/Denver", hour: "numeric", hour12: false }));
@@ -345,8 +347,9 @@ async function renderHome(root) {
     </div>
 
     <div class="grid2 section">
-      <div class="card"><div class="row between"><h2>${OFFICE ? "Active jobs" : "My jobs"}</h2><span class="badge">${myJobs.length}</span></div>
-        ${jobRows(myJobs) || `<p class="muted small">${OFFICE ? "No active jobs." : "Nothing assigned to you."}</p>`}</div>
+      <div class="card"><div class="row between"><h2>${OFFICE ? "Active jobs" : "My jobs"}</h2><span class="badge" id="myjobcount">${myJobs.length + myOrders.length}</span></div>
+        <div id="myorders">${orderRows(myOrders)}</div>
+        ${jobRows(myJobs) || (myOrders.length ? "" : `<p class="muted small" id="nomine">${OFFICE ? "No active jobs." : "Nothing assigned to you."}</p>`)}</div>
       <div class="card"><div class="row between"><h2>Due this week</h2><span class="badge ${dueSoon.some((j) => daysUntil(j.due_date) < 0) ? "bad" : ""}">${dueSoon.length}</span></div>
         ${jobRows(dueSoon) || '<p class="muted small">Nothing due in the next 7 days.</p>'}</div>
     </div>`;
@@ -357,6 +360,7 @@ async function renderHome(root) {
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob((jobs.data ?? []).find((j) => j.id === b.dataset.job), () => renderShell())));
   if (!OFFICE) renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
+  if (myOrders.length) fillMyOrders(root, myOrders, myJobs.length);
   if (can("admin")) sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open").then(({ count }) => {
     const el = root.querySelector("#reqalert"); if (!el || !count) return;
     el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
@@ -1177,6 +1181,33 @@ function jobCard(j, steps) {
 }
 
 // Kept for the Home screen lists.
+// Shopify / wholesale orders assigned to me, shown in "My jobs" on Home. Shown right away from the hub's
+// assignment list, then checked against Shopify so shipped orders drop off and the customer/items fill in.
+function orderRows(list, open) {
+  if (!list.length) return "";
+  return `<div class="list" style="margin-top:6px">${list.map((a) => {
+    const o = open?.find((x) => x.id === a.shopify_order_id);
+    const pcs = o ? o.lines.reduce((t, l) => t + Number(l.qty), 0) : null;
+    return `<div class="item" data-myorder="${esc(a.shopify_order_id)}"><div class="row between"><span class="title">🛒 ${esc(a.order_name)}${o?.customer ? ` · ${esc(o.customer)}` : ""}</span>
+      ${pcs != null ? `<span class="badge">${pcs} pc</span>` : ""}</div>
+      <div class="small muted">${o ? (o.wholesale ? "Wholesale order" : "Website order") : "Shopify order"}${o?.pickup ? " · Local pickup" : ""}${a.status !== "Not started" ? ` · <span class="badge ${a.status === "Ready to ship" ? "ok" : "warn"}">${esc(a.status)}</span>` : ""}</div>
+      ${o ? `<div class="small">${o.lines.map((l) => `${l.qty} × ${esc(l.title)}`).join(", ")}</div>` : ""}</div>`;
+  }).join("")}</div>`;
+}
+async function fillMyOrders(root, mine, jobCount) {
+  const { error, orders, inv, assign } = await loadOpenOrders();
+  const el = root.querySelector("#myorders"); if (!el || error) return;
+  const open = mine.filter((a) => orders.some((o) => o.id === a.shopify_order_id)); // shipped/closed orders drop off
+  orders.forEach((o) => o.lines.forEach((l) => { const it = matchStock(l, inv, o.wholesale); l._stock = it ? Number(it.quantity) : null; }));
+  el.innerHTML = orderRows(open, orders);
+  const c = root.querySelector("#myjobcount"); if (c) c.textContent = jobCount + open.length;
+  if (!open.length && !jobCount) el.innerHTML = '<p class="muted small">Nothing assigned to you.</p>';
+  el.querySelectorAll("[data-myorder]").forEach((b) => (b.onclick = () => {
+    const o = orders.find((x) => x.id === b.dataset.myorder);
+    viewOrder(o, assign[o.id], o.wholesale, () => { state.cache.openOrders = null; renderShell(); });
+  }));
+}
+
 function jobRows(list) {
   if (!list.length) return "";
   return `<div class="list" style="margin-top:6px">${list.map((j) => {
