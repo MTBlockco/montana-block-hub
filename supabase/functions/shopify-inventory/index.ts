@@ -103,6 +103,7 @@ async function sync(service: ReturnType<typeof createClient>) {
   return { synced: rows.length, removed: stale.length, wholesale: whCounts.length };
 }
 
+const IMG = /\.(jpe?g|png|gif|webp|heic|heif)(\?|$)/i;
 // Unfulfilled orders, line by line, for the Jobs > SHOPIFY / WHOLESALE tabs. No prices are returned.
 async function openOrders() {
   const out: Record<string, unknown>[] = [];
@@ -111,19 +112,33 @@ async function openOrders() {
     const data = await gql(`query($after: String) {
       orders(first: 100, after: $after, sortKey: CREATED_AT, query: "status:open AND (fulfillment_status:unfulfilled OR fulfillment_status:partial)") {
         pageInfo { hasNextPage endCursor }
-        nodes { id name createdAt tags displayFulfillmentStatus note
+        nodes { id name createdAt tags displayFulfillmentStatus note customAttributes { key value }
           shippingAddress { company name } billingAddress { company name } shippingLine { title }
-          lineItems(first: 100) { nodes { title variantTitle sku unfulfilledQuantity requiresShipping variant { id } } } } } }`, { after });
+          lineItems(first: 100) { nodes { title variantTitle sku unfulfilledQuantity requiresShipping variant { id }
+            image { url } product { featuredMedia { preview { image { url } } } } customAttributes { key value } } } } } }`, { after });
     const o = data.orders;
     for (const n of o.nodes) {
+      const photos: { url: string; caption: string }[] = [];
+      const addPhotos = (attrs: any[], where: string) => (attrs ?? []).forEach((a: any) => {
+        for (const u of String(a.value ?? "").match(/https?:\/\/[^\s"',]+/g) ?? [])
+          if (IMG.test(u) || /upload|photo|image|picture|file/i.test(a.key)) photos.push({ url: u, caption: `${where}${a.key ? " · " + a.key.replace(/^_+/, "") : ""}` });
+      });
+      addPhotos(n.customAttributes, "Order");
       const lines = n.lineItems.nodes.filter((l: any) => l.unfulfilledQuantity > 0 && l.requiresShipping)
-        .map((l: any) => ({ title: l.title, variant: l.variantTitle === "Default Title" ? null : l.variantTitle, sku: l.sku || null, qty: l.unfulfilledQuantity, variant_id: l.variant?.id ?? null }));
+        .map((l: any) => {
+          addPhotos(l.customAttributes, l.title);
+          const img = l.image?.url ?? l.product?.featuredMedia?.preview?.image?.url ?? null;
+          return { title: l.title, variant: l.variantTitle === "Default Title" ? null : l.variantTitle, sku: l.sku || null, qty: l.unfulfilledQuantity, variant_id: l.variant?.id ?? null,
+            image: img ? img + (img.includes("?") ? "&" : "?") + "width=300" : null,
+            options: (l.customAttributes ?? []).filter((a: any) => !a.key.startsWith("_") && !/^https?:/.test(a.value ?? "")).map((a: any) => `${a.key}: ${a.value}`) };
+        });
       if (!lines.length) continue;
       const wholesale = (n.tags ?? []).some((t: string) => /wholesale/i.test(t)) || lines.some((l: any) => /^wholesale/i.test(l.title));
       out.push({
         id: n.id, name: n.name, created_at: n.createdAt, status: n.displayFulfillmentStatus,
         customer: n.shippingAddress?.company || n.billingAddress?.company || n.shippingAddress?.name || n.billingAddress?.name || "",
         pickup: /pickup/i.test(n.shippingLine?.title ?? ""), shipping: n.shippingLine?.title ?? null, note: n.note ?? null, wholesale, lines,
+        tags: n.tags ?? [], photos,
       });
     }
     after = o.pageInfo.hasNextPage ? o.pageInfo.endCursor : null;

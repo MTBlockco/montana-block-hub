@@ -813,6 +813,8 @@ async function loadOpenOrders(force) {
     sb.from("order_assignments").select("*"),
   ]);
   const assign = Object.fromEntries((asg ?? []).map((a) => [a.shopify_order_id, a]));
+  const { data: hubPhotos } = await sb.from("order_photos").select("*").order("created_at");
+  (res?.orders ?? []).forEach((o) => (o.hubPhotos = (hubPhotos ?? []).filter((p) => p.shopify_order_id === o.id)));
   const out = { at: Date.now(), error: res?.error ?? null, orders: res?.orders ?? [], inv: inv ?? [], assign };
   if (!out.error) state.cache.openOrders = out;
   return out;
@@ -878,7 +880,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
         <div class="row between"><span class="title">${isMine(o) ? '<span class="badge ok">Yours</span> ' : ""}${esc(o.name)} · ${esc(o.customer || "")}</span>
           <span class="badge ${d >= 10 ? "bad" : d >= 5 ? "warn" : ""}">${d === 0 ? "Today" : d + "d old"}</span></div>
         <div class="row between small" style="margin-top:2px"><span class="${who.length ? "assignees" : "muted"}">👤 ${who.length ? who.map(esc).join(", ") : "Not assigned"}</span>${a && a.status !== "Not started" ? `<span class="badge ${a.status === "Ready to ship" ? "ok" : "warn"}">${esc(a.status)}</span>` : ""}</div>
-        <div class="small muted">${fmtDate(o.created_at.slice(0, 10))}${o.status === "PARTIALLY_FULFILLED" ? " · partly shipped" : ""}${o.pickup ? " · Local pickup" : ""}</div>
+        <div class="small muted">${fmtDate(o.created_at.slice(0, 10))}${o.status === "PARTIALLY_FULFILLED" ? " · partly shipped" : ""}${o.pickup ? " · Local pickup" : ""}${orderPhotoCount(o) ? ` · 📷 ${orderPhotoCount(o)}` : ""}${(o.tags ?? []).filter((t) => !/wholesale/i.test(t)).map((t) => ` <span class="badge ${/hold/i.test(t) ? "warn" : ""}">${esc(t)}</span>`).join("")}</div>
         ${o.lines.map((l) => `<div class="row between small" style="margin-top:4px"><span>${l.qty} × ${esc(l.title)}${l.variant ? ` <span class="muted">(${esc(l.variant)})</span>` : ""}</span>
           <span class="muted">${l._stock == null ? "" : l._stock >= l.qty ? "✓ on shelf" : `${Math.max(0, l._stock)} on shelf`}</span></div>`).join("")}
         ${o.note ? `<div class="small muted" style="margin-top:4px;white-space:pre-wrap">📝 ${esc(o.note)}</div>` : ""}
@@ -908,22 +910,51 @@ function viewOrder(o, a, wholesale, done) {
     <h1 class="jv-title">${esc(o.name)}</h1>
     <div class="small muted">${esc(o.customer || "")}${o.customer ? " · " : ""}${fmtDate(o.created_at.slice(0, 10))}${wholesale ? " · Wholesale" : " · Website"}</div>
     <div class="small" style="margin-top:4px">🚚 ${o.pickup ? "<strong>Local pickup</strong>" : esc(o.shipping || "Shipping")}${o.status === "PARTIALLY_FULFILLED" ? ' · <span class="badge warn">Partly shipped</span>' : ""}</div>
+    ${(o.tags ?? []).length ? `<div class="row wrap" style="gap:4px;margin-top:6px">${o.tags.map((t) => `<span class="badge ${/hold/i.test(t) ? "warn" : ""}">${esc(t)}</span>`).join("")}</div>` : ""}
     <div class="row between jv-people" style="margin-top:10px">${who.length ? `<span class="assignees">👤 ${who.map(esc).join(", ")}</span>` : '<span class="muted">👤 Not assigned</span>'}${can("lead") && !OFFICE ? '<button class="btn sm" id="oassign">Assign</button>' : ""}</div>
     <div class="section"><label>Status</label>
       ${canStatus ? `<div class="chips" id="ostatus">${ORDER_STATUSES.map((x) => `<button class="chip ${x === status ? "active" : ""}" data-s="${x}">${x}</button>`).join("")}</div>`
         : `<span class="badge ${status === "Ready to ship" ? "ok" : status === "In progress" ? "warn" : ""}">${esc(status)}</span>`}</div>
     <h3 class="section" style="margin-bottom:4px">Items to ship</h3>
-    <div class="list">${o.lines.map((l) => `<div class="item" style="cursor:default"><div class="row between">
+    <div class="list">${o.lines.map((l) => `<div class="item row" style="cursor:default;gap:10px;align-items:flex-start">
+      ${l.image ? `<img src="${esc(l.image)}" alt="" style="width:56px;height:56px;object-fit:cover;border-radius:8px;flex:none;background:#fff" loading="lazy">` : ""}
+      <div style="flex:1;min-width:0"><div class="row between">
       <span class="title">${l.qty} × ${esc(l.title)}${l.variant ? ` <span class="muted">(${esc(l.variant)})</span>` : ""}</span>
       <span class="small ${l._stock == null ? "muted" : l._stock >= l.qty ? "" : "error"}">${l._stock == null ? "not tracked" : l._stock >= l.qty ? "✓ on shelf" : `${Math.max(0, l._stock)} on shelf`}</span></div>
-      ${l.sku ? `<div class="small muted">SKU ${esc(l.sku)}</div>` : ""}</div>`).join("")}</div>
+      ${(l.options ?? []).map((x) => `<div class="small">${esc(x)}</div>`).join("")}
+      ${l.sku ? `<div class="small muted">SKU ${esc(l.sku)}</div>` : ""}</div></div>`).join("")}</div>
     ${o.note ? `<h3 class="section" style="margin-bottom:4px">Order note</h3><div class="card small" style="white-space:pre-wrap">${esc(o.note)}</div>` : ""}
+    <div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">📷 Photos</h3>
+      <label class="btn sm" style="cursor:pointer">+ Add photo<input type="file" accept="image/*" multiple id="ophoto" hidden></label></div>
+    <div id="ophotos"><p class="small muted" style="margin:0">Loading photos…</p></div>
     <div class="row wrap section">
       ${can("lead") && !OFFICE ? '<button class="btn" id="ojob">+ Job from this order</button>' : ""}
       ${can("admin") ? `<a class="btn" href="https://admin.shopify.com/store/brittany-316/orders/${esc(numericId)}" target="_blank" rel="noopener">Open in Shopify ↗</a>` : ""}
     </div>
     ${a?.updated_by ? `<p class="small muted">Last updated by ${esc(nameOf(a.updated_by))} · ${new Date(a.updated_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}`,
   (root, close) => {
+    const showPhotos = async () => {
+      const list = await orderPhotoList(o);
+      const el = root.querySelector("#ophotos"); if (!el) return;
+      el.innerHTML = list.length ? `<div class="sop-photos">${list.map((p, n) => `<figure data-oph="${n}"><img src="${esc(p.url)}" alt="${esc(p.caption || o.name)}" loading="lazy">${p.caption ? `<figcaption class="small">${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>`
+        : '<p class="small muted" style="margin:0">No photos on this order yet. Add the customer\'s pictures or reference shots here so whoever builds it can see them.</p>';
+      el.querySelectorAll("[data-oph]").forEach((f) => (f.onclick = () => photoViewer(list[Number(f.dataset.oph)], list)));
+    };
+    showPhotos();
+    root.querySelector("#ophoto").onchange = async (e) => {
+      const files = [...e.target.files]; if (!files.length) return;
+      toast(`Uploading ${files.length} photo${files.length > 1 ? "s" : ""}…`);
+      for (const f of files) {
+        const path = `${String(o.id).split("/").pop()}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.jpg`;
+        const up = await sb.storage.from("orders").upload(path, await shrinkImage(f, 1600), { contentType: "image/jpeg" });
+        if (up.error) return toast(up.error.message);
+        const { data: row, error } = await sb.from("order_photos").insert({ shopify_order_id: o.id, order_name: o.name, path, uploaded_by: state.profile.id }).select().single();
+        if (error) return toast(error.message);
+        (o.hubPhotos ??= []).push(row);
+      }
+      log("order_photo", "order", null, { order: o.name, count: files.length });
+      toast("Photo added"); e.target.value = ""; showPhotos();
+    };
     root.querySelector("#oassign")?.addEventListener("click", () => { close(); assignOrder(o, a, done); });
     root.querySelectorAll("#ostatus [data-s]").forEach((b) => (b.onclick = async () => {
       const row = { shopify_order_id: o.id, order_name: o.name, status: b.dataset.s };
@@ -938,10 +969,33 @@ function viewOrder(o, a, wholesale, done) {
       const lines = o.lines.map((l) => `${l.qty} × ${l.title}${l.variant ? ` (${l.variant})` : ""}`).join("\n");
       const one = o.lines.length === 1 ? o.lines[0] : null;
       editJob({ title: `${o.name} – ${o.customer || (wholesale ? "Wholesale" : "Web order")}`, product: one ? one.title : "", quantity: one ? one.qty : o.lines.reduce((t, l) => t + Number(l.qty), 0),
-        customer: o.customer || "", channel: wholesale ? "Retail" : "Web", notes: `Shopify order ${o.name}\n${lines}${o.note ? "\n\nOrder note: " + o.note : ""}` },
+        customer: o.customer || "", channel: wholesale ? "Retail" : "Web", shopify_order_id: o.id, notes: `Shopify order ${o.name}\n${lines}${o.note ? "\n\nOrder note: " + o.note : ""}` },
         () => { jobFilter = "Active"; done?.(); });
     });
   });
+}
+
+// A job made from a Shopify order shows that order's photos.
+async function fillJobPhotos(el, j) {
+  if (!el) return;
+  const { orders } = await loadOpenOrders();
+  let o = (orders ?? []).find((x) => x.id === j.shopify_order_id);
+  if (!o) o = { id: j.shopify_order_id, name: "", photos: [], hubPhotos: (await sb.from("order_photos").select("*").eq("shopify_order_id", j.shopify_order_id).order("created_at")).data ?? [] };
+  const list = await orderPhotoList(o);
+  if (!list.length) return;
+  el.innerHTML = `<h3 class="section" style="margin-bottom:4px">📷 Order photos</h3><div class="sop-photos">${list.map((p, n) => `<figure data-jph="${n}"><img src="${esc(p.url)}" alt="" loading="lazy">${p.caption ? `<figcaption class="small">${esc(p.caption)}</figcaption>` : ""}</figure>`).join("")}</div>`;
+  el.querySelectorAll("[data-jph]").forEach((f) => (f.onclick = () => photoViewer(list[Number(f.dataset.jph)], list)));
+}
+
+// Every photo on an order: pictures the customer attached in Shopify, plus ones added in the hub (private, links last an hour).
+const orderPhotoCount = (o) => (o.photos ?? []).length + (o.hubPhotos ?? []).length;
+async function orderPhotoList(o) {
+  const hub = (o.hubPhotos ?? []).map((p) => ({ ...p, caption: p.caption || `Added by ${nameOf(p.uploaded_by) || "someone"} · ${fmtDate(p.created_at.slice(0, 10))}` }));
+  if (hub.length) {
+    const { data } = await sb.storage.from("orders").createSignedUrls(hub.map((p) => p.path), 3600);
+    (data ?? []).forEach((d) => { const p = hub.find((x) => x.path === d.path); if (p && d.signedUrl) p.url = d.signedUrl; });
+  }
+  return [...(o.photos ?? []).map((p) => ({ url: p.url, caption: `From the order · ${p.caption}` })), ...hub.filter((p) => p.url)];
 }
 
 // Leads and up: pick who's working a Shopify order. Shop employees then see it in their SHOPIFY / WHOLESALE tab.
@@ -1407,6 +1461,7 @@ async function viewJob(j, done) {
     if (!(steps ?? []).length) return '<div class="list"><div class="empty">No steps on this job.</div></div>';
     return `<div class="list">${(steps ?? []).map(stepHtml).join("")}</div>`;
     })()}
+    ${j.shopify_order_id ? '<div id="jobphotos"></div>' : ""}
     <h3 class="section" style="margin-bottom:4px">Job notes</h3>
     <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
     ${(timers ?? []).length ? `<details class="section"><summary class="small">Time log (${timers.length})</summary>
@@ -1421,6 +1476,7 @@ async function viewJob(j, done) {
       ${can("lead") && j.status === "Complete" ? '<button class="btn" id="reopen">Reopen</button>' : ""}
     </div>`, (root, close) => {
     if (canMaterials()) fillJobMaterials(root.querySelector("#jobmat"), j);
+    if (j.shopify_order_id) fillJobPhotos(root.querySelector("#jobphotos"), j);
     root.querySelectorAll("[data-start]").forEach((b) => (b.onclick = async () => {
       const { error } = await sb.rpc("job_timer_start", { p_step: b.dataset.start });
       if (error) return toast(error.message);
@@ -1651,7 +1707,7 @@ async function editJob(j = {}, done, steps = null) {
       const f = formData(e.target);
       const row = { title: f.title, product: f.product || null, quantity: Math.max(1, Math.round(Number(f.quantity))), customer: f.customer || null,
         channel: f.channel, due_date: f.due_date || null, priority: f.priority, assigned_to: f.assigned_to || null, notes: f.notes || null };
-      if (!j.id) row.status = "Active";
+      if (!j.id) { row.status = "Active"; if (j.shopify_order_id) row.shopify_order_id = j.shopify_order_id; }
       const res = j.id ? await sb.from("jobs").update(row).eq("id", j.id).select().single() : await sb.from("jobs").insert(row).select().single();
       if (res.error) return toast(res.error.message);
       if (seesMoney() && (f.unit_price !== "" || f.line_total !== "" || f.money_notes)) {
