@@ -861,6 +861,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   root.innerHTML = `
     ${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}
     ${chips}
+    <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn sm" id="printbuild">🖨 Print build list</button></div>
     <details class="grp buildlist" style="margin-top:12px"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">🔨 Build list</span>
       <span class="grp-meta">${toBuild.length ? `${toBuild.reduce((a, r) => a + r.short, 0)} to build · ` : ""}${list.length} order${list.length === 1 ? "" : "s"}</span></summary>
       <div style="padding:0 12px 12px">
@@ -889,10 +890,52 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   wireTopbar(root); wire();
   const reload = () => { state.cache.openOrders = null; renderOpenOrders(root, chips, wholesale, true); };
   root.querySelectorAll("[data-order]").forEach((el) => (el.onclick = () => viewOrder(list.find((o) => o.id === el.dataset.order), assign[el.dataset.order], wholesale, reload)));
+  root.querySelector("#printbuild")?.addEventListener("click", () => printBuildList(rows, list, assign, wholesale));
   root.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => {
     const r = rows[Number(b.dataset.build)];
     editJob({ title: `${wholesale ? "Wholesale" : "Web"} – ${r.name}`, product: r.name, quantity: r.short, customer: wholesale ? [...r.orders].join(", ") : "Website orders", channel: wholesale ? "Retail" : "Web" }, () => { jobFilter = "Active"; renderJobs(root); });
   }));
+}
+
+// Printable build list: big, black-on-white, a checkbox per line, then each open order (no prices).
+function printBuildList(rows, orders, assign, wholesale) {
+  const kind = wholesale ? "Wholesale" : "Website";
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
+  const build = rows.filter((r) => r.short > 0), other = rows.filter((r) => !(r.short > 0));
+  const total = build.reduce((a, r) => a + r.short, 0);
+  const row = (r) => `<tr><td class="box">☐</td><td><b>${esc(r.name)}</b><div class="sub">${[...r.orders].join(", ")}</div></td>
+    <td class="n">${r.ordered}</td><td class="n">${r.stock == null ? "—" : Math.max(0, r.stock)}</td><td class="n big">${r.short == null ? "?" : r.short > 0 ? r.short : "✓"}</td></tr>`;
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${kind} Build List – ${today}</title><style>
+    @page { margin: 0.5in; }
+    body { font: 13pt/1.35 -apple-system, "Segoe UI", Arial, sans-serif; color: #000; background: #fff; margin: 0; }
+    h1 { font-size: 22pt; margin: 0; } .meta { color: #444; margin: 2px 0 14px; }
+    .tot { font-size: 15pt; border: 2px solid #000; padding: 8px 12px; display: inline-block; margin-bottom: 14px; }
+    h2 { font-size: 15pt; margin: 18px 0 6px; border-bottom: 2px solid #000; padding-bottom: 3px; }
+    table { width: 100%; border-collapse: collapse; } th, td { border-bottom: 1px solid #999; padding: 7px 6px; text-align: left; vertical-align: top; }
+    th { font-size: 10pt; text-transform: uppercase; letter-spacing: .04em; border-bottom: 2px solid #000; }
+    td.n, th.n { text-align: center; width: 70px; } td.big { font-size: 17pt; font-weight: 800; } td.box { width: 26px; font-size: 18pt; line-height: 1; }
+    .sub { font-size: 10pt; color: #555; } tr { break-inside: avoid; }
+    .order { border: 1px solid #000; padding: 8px 10px; margin: 0 0 8px; break-inside: avoid; }
+    .order b { font-size: 13pt; } .order ul { margin: 4px 0 0 18px; padding: 0; } .note { font-size: 10.5pt; margin-top: 4px; font-style: italic; }
+    .orders { columns: 2; column-gap: 14px; } .pb { break-before: page; }
+  </style></head><body>
+    <h1>🔨 ${kind} Build List</h1><div class="meta">${today} · ${orders.length} open order${orders.length === 1 ? "" : "s"} · Montana Block Co.</div>
+    ${build.length ? `<div class="tot"><b>${total} pieces to build</b> across ${build.length} product${build.length === 1 ? "" : "s"}</div>` : other.some((r) => r.short == null) ? '<div class="tot">No known shortages — check the shelf for the items marked "?"</div>' : '<div class="tot">Nothing to build — everything ordered is on the shelf.</div>'}
+    ${build.length ? `<h2>To build</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${build.map(row).join("")}</table>` : ""}
+    ${other.length ? `<h2>Already on the shelf / not tracked</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${other.map(row).join("")}</table>` : ""}
+    ${orders.length ? `<h2 class="pb">Open orders</h2><div class="orders">${orders.map((o) => {
+      const who = (assign[o.id]?.assignees ?? []).map(nameOf).filter(Boolean);
+      return `<div class="order">☐ <b>${esc(o.name)}</b> · ${esc(o.customer || "")}<div class="sub">${fmtDate(o.created_at.slice(0, 10))}${o.pickup ? " · Local pickup" : o.shipping ? " · " + esc(o.shipping) : ""}${who.length ? " · 👤 " + who.map(esc).join(", ") : ""}${assign[o.id]?.status && assign[o.id].status !== "Not started" ? " · " + esc(assign[o.id].status) : ""}</div>
+        <ul>${o.lines.map((l) => `<li>${l.qty} × ${esc(l.title)}${l.variant ? ` (${esc(l.variant)})` : ""}</li>`).join("")}</ul>${o.note ? `<div class="note">Note: ${esc(o.note)}</div>` : ""}</div>`;
+    }).join("")}</div>` : ""}
+  </body></html>`;
+  // Print through a hidden frame so it works from the installed app on phones and computers.
+  const f = document.createElement("iframe");
+  f.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0";
+  document.body.appendChild(f);
+  f.contentDocument.open(); f.contentDocument.write(html); f.contentDocument.close();
+  setTimeout(() => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch { toast("Couldn't open printing on this device."); } setTimeout(() => f.remove(), 60000); }, 300);
+  log("print_build_list", "order", null, { kind, products: rows.length, orders: orders.length });
 }
 
 // One Shopify order: what's on it, what's on the shelf, who's on it and where it's at. No prices.
