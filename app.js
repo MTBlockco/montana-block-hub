@@ -38,8 +38,11 @@ const today = () => new Date().toLocaleDateString("en-CA", { timeZone: "America/
 const daysUntil = (d) => Math.round((new Date(d + "T12:00:00") - new Date(today() + "T12:00:00")) / 864e5);
 // Website products are "Low" under 10 on hand unless an item has its own number. Supplies use their own reorder point.
 const LOW_PRODUCTS = 9;
+// Wholesale: keep at least 10 of each on the shelf (reorder point 9 = "under 10"); an item can have its own number.
+const WHOLESALE_MIN = 10;
+const wholesaleMin = (i) => (i.reorder_point == null ? WHOLESALE_MIN : Number(i.reorder_point) < 0 ? 0 : Number(i.reorder_point) + 1);
 const isLow = (i) => {
-  const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : null);
+  const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : i.source === "wholesale" ? WHOLESALE_MIN - 1 : null);
   return rp != null && Number(rp) >= 0 && Number(i.quantity) <= Number(rp); // reorder point -1 = don't track
 };
 
@@ -809,7 +812,7 @@ async function loadOpenOrders(force) {
   if (!force && c && Date.now() - c.at < 120000) return c;
   const [res, { data: inv }, { data: asg }] = await Promise.all([
     fnCall("shopify-inventory", { action: "open_orders" }),
-    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id").in("source", ["shopify", "wholesale", "product"]),
+    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id, reorder_point").in("source", ["shopify", "wholesale", "product"]),
     sb.from("order_assignments").select("*"),
   ]);
   const assign = Object.fromEntries((asg ?? []).map((a) => [a.shopify_order_id, a]));
@@ -850,11 +853,15 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     const item = matchStock(l, inv, wholesale);
     const key = item?.id ?? "x:" + normName(l.title + " " + (l.variant ?? ""));
     const name = item?.name ?? (l.variant ? `${l.title} – ${l.variant}` : l.title);
-    (need[key] ??= { name, ordered: 0, stock: item ? Number(item.quantity) : null, orders: new Set() });
+    (need[key] ??= { name, ordered: 0, stock: item ? Number(item.quantity) : null, orders: new Set(), min: wholesale && item?.source === "wholesale" ? wholesaleMin(item) : 0 });
     need[key].ordered += Number(l.qty); need[key].orders.add(o.name);
     l._stock = item ? Number(item.quantity) : null;
   }));
-  const rows = Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered - Math.max(0, r.stock)) }))
+  // Wholesale keeps 10 of each on the shelf: restock items under 10 even with no open orders.
+  if (wholesale) inv.filter((i) => i.source === "wholesale" && wholesaleMin(i) > 0 && !need[i.id] && Number(i.quantity) < wholesaleMin(i))
+    .forEach((i) => (need[i.id] = { name: i.name, ordered: 0, stock: Number(i.quantity), orders: new Set(), min: wholesaleMin(i) }));
+  // Build = fill the orders, then get the shelf back to its minimum.
+  const rows = Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered + (r.min ?? 0) - Math.max(0, r.stock)) }))
     .sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered);
   const toBuild = rows.filter((r) => r.short > 0);
   const age = (d) => Math.floor((Date.now() - new Date(d)) / 864e5);
@@ -865,9 +872,9 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     <details class="grp buildlist" style="margin-top:12px"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">🔨 Build list</span>
       <span class="grp-meta">${toBuild.length ? `${toBuild.reduce((a, r) => a + r.short, 0)} to build · ` : ""}${list.length} order${list.length === 1 ? "" : "s"}</span></summary>
       <div style="padding:0 12px 12px">
-      <p class="small muted" style="margin:4px 0 8px">Everything ordered and not shipped yet, compared to what's in ${wholesale ? "wholesale" : "website"} inventory.</p>
+      <p class="small muted" style="margin:4px 0 8px">Everything ordered and not shipped yet, compared to what's in ${wholesale ? `wholesale inventory. Build covers the orders <strong>plus</strong> getting each item back to ${WHOLESALE_MIN} on the shelf` : "website inventory"}.</p>
       ${rows.length ? `<table><tr><th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th></tr>${rows.map((r, i) => `<tr>
-        <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ")}</div></td>
+        <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ") || (r.min ? `Restock to ${r.min}` : "")}</div></td>
         <td>${r.ordered}</td><td>${r.stock == null ? '<span class="small muted">not tracked</span>' : r.stock}</td>
         <td>${r.short == null ? "?" : r.short > 0 ? `<span class="badge bad">${r.short}</span>${can("lead") ? ` <button class="linkbtn" data-build="${i}">+ Job</button>` : ""}` : '<span class="badge ok">✓</span>'}</td></tr>`).join("")}</table>`
         : `<p class="small muted" style="margin:0">No open ${wholesale ? "wholesale" : "website"} orders. 🎉</p>`}
@@ -903,7 +910,7 @@ function printBuildList(rows, orders, assign, wholesale) {
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   const build = rows.filter((r) => r.short > 0), other = rows.filter((r) => !(r.short > 0));
   const total = build.reduce((a, r) => a + r.short, 0);
-  const row = (r) => `<tr><td class="box">☐</td><td><b>${esc(r.name)}</b><div class="sub">${[...r.orders].join(", ")}</div></td>
+  const row = (r) => `<tr><td class="box">☐</td><td><b>${esc(r.name)}</b><div class="sub">${[...r.orders].join(", ")}${r.min ? `${r.orders.size ? " · " : ""}Restock to ${r.min}` : ""}</div></td>
     <td class="n">${r.ordered}</td><td class="n">${r.stock == null ? "—" : Math.max(0, r.stock)}</td><td class="n big">${r.short == null ? "?" : r.short > 0 ? r.short : "✓"}</td></tr>`;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${kind} Build List – ${today}</title><style>
     @page { margin: 0.5in; }
@@ -920,6 +927,7 @@ function printBuildList(rows, orders, assign, wholesale) {
     .orders { columns: 2; column-gap: 14px; } .pb { break-before: page; }
   </style></head><body>
     <h1>🔨 ${kind} Build List</h1><div class="meta">${today} · ${orders.length} open order${orders.length === 1 ? "" : "s"} · Montana Block Co.</div>
+    ${wholesale ? `<div class="meta">Build = what's ordered plus enough to keep ${WHOLESALE_MIN} of each item on the shelf.</div>` : ""}
     ${build.length ? `<div class="tot"><b>${total} pieces to build</b> across ${build.length} product${build.length === 1 ? "" : "s"}</div>` : other.some((r) => r.short == null) ? '<div class="tot">No known shortages — check the shelf for the items marked "?"</div>' : '<div class="tot">Nothing to build — everything ordered is on the shelf.</div>'}
     ${build.length ? `<h2>To build</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${build.map(row).join("")}</table>` : ""}
     ${other.length ? `<h2>Already on the shelf / not tracked</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${other.map(row).join("")}</table>` : ""}
@@ -1977,11 +1985,13 @@ async function renderWholesale(root) {
     ${topbar("Products", canInv() ? '<button class="btn sm primary" id="new">+ Product</button>' : "")}
     ${productTabs()}
     <input id="q" placeholder="Search patterns, species, bins…" value="${esc(whQ)}" style="margin-bottom:6px">
-    <p class="small muted" style="margin:0 0 8px">Show and distributor stock. Tracked here only, not on Shopify. ${totalPcs} pieces on hand${totalVal && seesMoney() ? ` · ${money(totalVal)} at wholesale` : ""}.</p>
+    <p class="small muted" style="margin:0 0 8px">Show and distributor stock. ${totalPcs} pieces on hand${totalVal && seesMoney() ? ` · ${money(totalVal)} at wholesale` : ""}. Keep ${WHOLESALE_MIN} of each.</p>
+    ${(() => { const low = (items ?? []).filter(isLow); const n = low.reduce((a, i) => a + wholesaleMin(i) - Math.max(0, Number(i.quantity)), 0);
+      return low.length ? `<div class="card accent" style="padding:10px;margin-bottom:8px">🔔 <strong>${low.length} item${low.length > 1 ? "s" : ""} under ${WHOLESALE_MIN}.</strong> Build <strong>${n}</strong> pieces to get every item back to ${WHOLESALE_MIN}. It's on the Wholesale build list in Jobs.</div>` : ""; })()}
     ${list.length ? groupedList("wh", list, (i) => `
         <div class="item hold" data-id="${i.id}"><div class="row between">
           ${photoSlot(i)}
-          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)}</div>
+          <div style="min-width:0;flex:1" data-open="${i.id}"><div class="title">${esc(i.name)} ${isLow(i) ? `<span class="badge warn">Low · build ${wholesaleMin(i) - Math.max(0, Number(i.quantity))}</span>` : ""}</div>
             <div class="small muted">${i.shopify_variant_id ? '<span class="badge">Shopify</span> ' : ""}${[i.species, i.location, seesMoney() && i.wholesale_price != null ? money(i.wholesale_price) + " ea" : ""].filter(Boolean).map(esc).join(" · ")}</div></div>
           <div class="qty">${canInv() ? '<button class="btn icon sm" data-adj="-1" aria-label="Sold one">−</button>' : ""}
             <span class="n ${Number(i.quantity) <= 0 ? "error" : ""}">${Number(i.quantity)}</span>
