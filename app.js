@@ -859,8 +859,9 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   root.innerHTML = `
     ${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}
     ${chips}
-    <div class="card" style="margin-top:12px">
-      <div class="row between"><h3 style="margin:0">🔨 Build list</h3><span class="small muted">${list.length} open order${list.length === 1 ? "" : "s"}</span></div>
+    <details class="grp buildlist" style="margin-top:12px"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">🔨 Build list</span>
+      <span class="grp-meta">${toBuild.length ? `${toBuild.reduce((a, r) => a + r.short, 0)} to build · ` : ""}${list.length} order${list.length === 1 ? "" : "s"}</span></summary>
+      <div style="padding:0 12px 12px">
       <p class="small muted" style="margin:4px 0 8px">Everything ordered and not shipped yet, compared to what's in ${wholesale ? "wholesale" : "website"} inventory.</p>
       ${rows.length ? `<table><tr><th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th></tr>${rows.map((r, i) => `<tr>
         <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ")}</div></td>
@@ -868,7 +869,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
         <td>${r.short == null ? "?" : r.short > 0 ? `<span class="badge bad">${r.short}</span>${can("lead") ? ` <button class="linkbtn" data-build="${i}">+ Job</button>` : ""}` : '<span class="badge ok">✓</span>'}</td></tr>`).join("")}</table>`
         : `<p class="small muted" style="margin:0">No open ${wholesale ? "wholesale" : "website"} orders. 🎉</p>`}
       ${toBuild.length ? `<p class="small" style="margin:8px 0 0"><strong>${toBuild.reduce((a, r) => a + r.short, 0)} pieces to build</strong> across ${toBuild.length} product${toBuild.length === 1 ? "" : "s"}.</p>` : ""}
-    </div>
+    </div></details>
     <h3 class="section" style="margin-bottom:4px">Open ${wholesale ? "wholesale" : "website"} orders</h3>
     <div class="list">${list.map((o) => {
       const d = age(o.created_at);
