@@ -742,12 +742,13 @@ async function renderJobs(root) {
   const byJob = {};
   (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
   tagMySteps(jobs, steps);
-  const recentDone = (j) => j.status === "Complete" && Date.now() - new Date(j.completed_at ?? j.updated_at ?? j.created_at) < 30 * 864e5;
-  const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
-  const doneBelow = jobFilter === "Active" ? (jobs ?? []).filter(recentDone).sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at)) : [];
+  // Billed jobs (archived) leave the Jobs tab but stay in the database for stats and records.
+  const billedJobs = (jobs ?? []).filter((j) => j.archived_at);
+  const live = (jobs ?? []).filter((j) => !j.archived_at);
+  const list = live.filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
-  const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
+  const counts = { Active: live.filter((j) => j.status !== "Complete").length, Complete: live.filter((j) => j.status === "Complete").length };
   if (jobFilter === "Materials") jobFilter = "Active";
   const tabs = ["Active", "Complete", "Shopify", "Wholesale"]; // shop employees only see orders assigned to them
   if (!tabs.includes(jobFilter)) jobFilter = "Active";
@@ -757,13 +758,33 @@ async function renderJobs(root) {
     ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
     ${chips}
     <div id="mytimer" style="margin-top:12px"></div>
-    <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed yet."}</div>`}</div>
-    ${doneBelow.length ? `<h3 class="section" style="margin-bottom:4px">✓ Completed <span class="small muted">· last 30 days</span></h3><div class="list">${doneBelow.map((j) => jobCard(j, byJob[j.id] ?? [])).join("")}</div>` : ""}`;
+    ${jobFilter === "Complete" && seesMoney() && list.length ? '<p class="small muted" style="margin:10px 0 0">Once a job is billed, tick <strong>Billed</strong> to clear it off the Jobs tab. Its record is kept.</p>' : ""}
+    <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed and waiting to bill."}</div>`}</div>
+    ${jobFilter === "Complete" && seesMoney() && billedJobs.length ? `<details class="section"><summary class="small muted" style="cursor:pointer">Billed &amp; cleared (${billedJobs.length})</summary>
+      <div class="list" style="margin-top:6px">${billedJobs.sort((a, b) => new Date(b.archived_at) - new Date(a.archived_at)).map((j) => `<div class="item row between" style="cursor:default">
+        <span><span class="title">${esc(j.title)}</span><div class="small muted">${j.shipped_qty ?? j.quantity} sent${j.completed_at ? ` · done ${fmtDate(String(j.completed_at).slice(0, 10))}` : ""} · billed ${fmtDate(String(j.archived_at).slice(0, 10))}</div></span>
+        <button class="btn sm" data-unbill="${j.id}">Put back</button></div>`).join("")}</div></details>` : ""}`;
   wireTopbar(root);
   renderMyTimer(root.querySelector("#mytimer"), () => renderJobs(root));
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
   root.querySelector("#new")?.addEventListener("click", () => editJob({}, () => renderJobs(root)));
-  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root))));
+  root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = (e) => { if (e.target.closest("[data-billed]")) return; viewJob(jobs.find((j) => j.id === b.dataset.job), () => renderJobs(root)); }));
+  root.querySelectorAll("[data-billed]").forEach((cb) => (cb.onclick = async (e) => {
+    e.stopPropagation();
+    const j = jobs.find((x) => x.id === cb.dataset.billed);
+    if (!confirm(`${j.title}: billed? This clears it off the Jobs tab. The record is kept.`)) { e.preventDefault(); return; }
+    const now = new Date().toISOString();
+    const { error } = await sb.from("jobs").update({ archived_at: now, archived_by: state.profile.id }).eq("id", j.id);
+    if (error) return toast(error.message);
+    if (!state.cache.jobMoney?.[j.id]?.billed_at) await sb.from("job_financials").upsert({ job_id: j.id, billed_at: now.slice(0, 10), updated_at: now });
+    log("bill_job", "job", j.id, { title: j.title, sent: j.shipped_qty });
+    toast(`${j.title} billed and cleared`); renderJobs(root);
+  }));
+  root.querySelectorAll("[data-unbill]").forEach((b) => (b.onclick = async () => {
+    const { error } = await sb.from("jobs").update({ archived_at: null, archived_by: null }).eq("id", b.dataset.unbill);
+    if (error) return toast(error.message);
+    toast("Put back in Complete"); renderJobs(root);
+  }));
   if (can("lead")) root.querySelectorAll(".item.hold[data-job]").forEach((el) => onHold(el, () => assignJob(jobs.find((j) => j.id === el.dataset.job), () => renderJobs(root))));
 }
 
@@ -1312,7 +1333,8 @@ function jobCard(j, steps) {
     return `<div class="item jobcard done" data-job="${j.id}">
     <div class="row between" style="gap:10px"><span class="title">✓ ${esc(j.title)}</span>
       <span class="pcs">${sent}<small> sent</small></span></div>
-    <div class="small">Complete${j.completed_at ? ` ${fmtDate(String(j.completed_at).slice(0, 10))}` : ""}${j.shipped_qty == null ? " · amount sent not recorded" : j.shipped_qty !== j.quantity ? ` · ordered ${j.quantity}` : ""}</div>
+    <div class="row between" style="gap:10px"><div class="small">Completed ${j.completed_at ? new Date(j.completed_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : ""}${j.shipped_qty == null ? " · amount sent not recorded" : j.shipped_qty !== j.quantity ? ` · ordered ${j.quantity}` : ""}</div>
+      ${seesMoney() ? `<label class="billchk" data-billed="${j.id}"><input type="checkbox" style="width:20px;height:20px;margin:0"> Billed</label>` : ""}</div>
   </div>`;
   }
   return `<div class="item jobcard${can("lead") ? " hold" : ""}" data-job="${j.id}">

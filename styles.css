@@ -304,3 +304,4 @@ details.grp > .list { padding: 0 8px 8px; }
 .jv-details { margin-top: 10px; }
 .jv-people { font-size: .9rem; }
 details.stepdone .progress > span { background: var(--ok); }
+.jobcard .billchk { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; font-weight: 600; color: var(--text); background: var(--surface-2); border: 1px solid var(--line, #3a2e25); border-radius: 999px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
