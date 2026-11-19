@@ -742,7 +742,9 @@ async function renderJobs(root) {
   const byJob = {};
   (steps ?? []).forEach((st) => (byJob[st.job_id] ??= []).push(st));
   tagMySteps(jobs, steps);
+  const recentDone = (j) => j.status === "Complete" && Date.now() - new Date(j.completed_at ?? j.updated_at ?? j.created_at) < 30 * 864e5;
   const list = (jobs ?? []).filter((j) => (jobFilter === "Complete" ? j.status === "Complete" : j.status !== "Complete"));
+  const doneBelow = jobFilter === "Active" ? (jobs ?? []).filter(recentDone).sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at)) : [];
   if (jobFilter === "Complete") list.sort((a, b) => new Date(b.completed_at ?? b.updated_at) - new Date(a.completed_at ?? a.updated_at));
   else list.sort((a, b) => Number(isMyJob(b)) - Number(isMyJob(a))); // your jobs on top (sort is stable, so due-date order stays)
   const counts = { Active: (jobs ?? []).filter((j) => j.status !== "Complete").length, Complete: (jobs ?? []).filter((j) => j.status === "Complete").length };
@@ -755,7 +757,8 @@ async function renderJobs(root) {
     ${topbar("Jobs", can("lead") && jobFilter === "Active" ? '<button class="btn sm primary" id="new">+ Job</button>' : "")}
     ${chips}
     <div id="mytimer" style="margin-top:12px"></div>
-    <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed yet."}</div>`}</div>`;
+    <div class="list" style="margin-top:12px">${list.map((j) => jobCard(j, byJob[j.id] ?? [])).join("") || `<div class="empty">${jobFilter === "Active" ? "No active jobs. Tap + Job to add one." : "Nothing completed yet."}</div>`}</div>
+    ${doneBelow.length ? `<h3 class="section" style="margin-bottom:4px">✓ Completed <span class="small muted">· last 30 days</span></h3><div class="list">${doneBelow.map((j) => jobCard(j, byJob[j.id] ?? [])).join("")}</div>` : ""}`;
   wireTopbar(root);
   renderMyTimer(root.querySelector("#mytimer"), () => renderJobs(root));
   root.querySelectorAll("[data-f]").forEach((b) => (b.onclick = () => { jobFilter = b.dataset.f; renderJobs(root); }));
@@ -1304,6 +1307,14 @@ const peopleLine = (j) => { const ids = jobPeople(j); return ids.length ? `<span
 
 // Jobs list card: just the job name and piece count (everything else is inside the job).
 function jobCard(j, steps) {
+  if (j.status === "Complete") {
+    const sent = j.shipped_qty ?? j.quantity ?? 0;
+    return `<div class="item jobcard done" data-job="${j.id}">
+    <div class="row between" style="gap:10px"><span class="title">✓ ${esc(j.title)}</span>
+      <span class="pcs">${sent}<small> sent</small></span></div>
+    <div class="small">Complete${j.completed_at ? ` ${fmtDate(String(j.completed_at).slice(0, 10))}` : ""}${j.shipped_qty == null ? " · amount sent not recorded" : j.shipped_qty !== j.quantity ? ` · ordered ${j.quantity}` : ""}</div>
+  </div>`;
+  }
   return `<div class="item jobcard${can("lead") ? " hold" : ""}" data-job="${j.id}">
     <div class="row between" style="gap:10px"><span class="title">${esc(j.title)}</span>
       <span class="pcs">${j.quantity ?? 1}<small> pcs</small></span></div>
