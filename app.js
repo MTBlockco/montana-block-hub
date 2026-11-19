@@ -43,6 +43,11 @@ const WHOLESALE_MIN = 10;
 const wholesaleMin = (i) => (i.reorder_point == null ? WHOLESALE_MIN : Number(i.reorder_point) < 0 ? 0 : Number(i.reorder_point) + 1);
 const WEBSITE_MIN = 10;
 const websiteMin = (i) => (i.reorder_point == null ? WEBSITE_MIN : Number(i.reorder_point) < 0 ? 0 : Number(i.reorder_point) + 1);
+// Website Stock build list is wood we make: no oils/wax/board care, merch, gift cards or bundles.
+// "Random Pattern - ..." POS listings draw from wholesale stock, so they're built off the Wholesale list instead.
+const NOT_WOOD_CATS = ["Board care", "Merch", "Bundles"];
+const isWoodProduct = (i) => !NOT_WOOD_CATS.includes(i.category) && !/^random pattern\s*-/i.test(i.name ?? "")
+  && !/\b(oil|wax|butter|conditioner|soap|hat|shirt|hoodie|sticker|gift card|apron)\b/i.test(i.name ?? "");
 const isLow = (i) => {
   const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : i.source === "wholesale" ? WHOLESALE_MIN - 1 : null);
   return rp != null && Number(rp) >= 0 && Number(i.quantity) <= Number(rp); // reorder point -1 = don't track
@@ -865,7 +870,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   const sortRows = (rs) => rs.sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered || a.name.localeCompare(b.name));
   const orderRows = sortRows(Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered + (r.min ?? 0) - Math.max(0, r.stock)) })));
   // Website stock: every website product kept at 10 (Shopify's "available" count already has unshipped orders taken out).
-  const stockRows = wholesale ? [] : sortRows(inv.filter((i) => ["shopify", "product"].includes(i.source) && i.category !== "Merch" && websiteMin(i) > 0 && Number(i.quantity) < websiteMin(i))
+  const stockRows = wholesale ? [] : sortRows(inv.filter((i) => ["shopify", "product"].includes(i.source) && isWoodProduct(i) && websiteMin(i) > 0 && Number(i.quantity) < websiteMin(i))
     .map((i) => ({ name: i.name, ordered: 0, stock: Number(i.quantity), orders: new Set(), min: websiteMin(i), short: websiteMin(i) - Math.max(0, Number(i.quantity)) })));
   const lists = wholesale
     ? [{ key: "wh", title: "Wholesale", rows: orderRows, orders: list, cols: "orders",
@@ -873,7 +878,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     : [{ key: "so", title: "Shopify Orders", rows: orderRows, orders: list, cols: "orders",
         desc: "Only what's on open website orders, compared to what's on the shelf.", empty: "No open website orders. 🎉" },
        { key: "ws", title: "Website Stock", rows: stockRows, orders: [], cols: "stock",
-        desc: `Website products under ${WEBSITE_MIN} available. Build gets each one back to ${WEBSITE_MIN}. No orders in this list. Hats and shirts aren't included.`, empty: `Every website product has ${WEBSITE_MIN} or more. 🎉` }];
+        desc: `Website products under ${WEBSITE_MIN} available. Build gets each one back to ${WEBSITE_MIN}. Wood products only (no oils, wax or merch) and no orders. Random Pattern pieces are on the Wholesale list.`, empty: `Every website product has ${WEBSITE_MIN} or more. 🎉` }];
   const buildCard = (L) => {
     const tb = L.rows.filter((r) => r.short > 0), n = tb.reduce((a, r) => a + r.short, 0);
     const head = L.cols === "stock" ? "<th>Product</th><th>On hand</th><th>Keep</th><th>Build</th>" : "<th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th>";
