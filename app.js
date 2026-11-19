@@ -1074,6 +1074,80 @@ function viewOrder(o, a, wholesale, done) {
   });
 }
 
+// ---------------------------------------------------------------- Box / layer packing record
+// Countertop stand jobs: record how many pieces went in each layer of each box. The total feeds "amount sent".
+const isBoxJob = (j) => /countertop|stand/i.test(`${j.title ?? ""} ${j.product ?? ""}`);
+const boxSum = (boxes) => boxes.reduce((a, b) => a + (b.layers ?? []).reduce((x, n) => x + Number(n || 0), 0), 0);
+async function fillJobBoxes(el, j, reload) {
+  if (!el) return;
+  const { data } = await sb.from("job_boxes").select("*").eq("job_id", j.id).order("box_no");
+  const boxes = data ?? [], total = boxSum(boxes);
+  el.innerHTML = `<div class="row between section" style="margin-bottom:4px"><h3 style="margin:0">📦 Boxes &amp; layers</h3>
+      ${j.status !== "Complete" || can("lead") ? '<button class="btn sm primary" id="addbox">+ Box</button>' : ""}</div>
+    <div class="card" style="padding:10px">
+      <div class="row between"><span><strong style="font-size:1.25rem">${total}</strong> <span class="small muted">pieces in ${boxes.length} box${boxes.length === 1 ? "" : "es"}</span></span>
+        <span class="small ${total === Number(j.quantity) ? "" : "muted"}">${total === Number(j.quantity) ? "✓ matches order" : `ordered ${j.quantity}`}</span></div>
+      ${boxes.length ? `<div class="list" style="margin-top:8px">${boxes.map((b) => `<div class="item" data-box="${b.id}">
+        <div class="row between"><span class="title">Box ${b.box_no}</span><strong>${(b.layers ?? []).reduce((x, n) => x + Number(n || 0), 0)}</strong></div>
+        <div class="small muted">${(b.layers ?? []).map((n, i) => `Layer ${i + 1}: <span style="color:var(--text)">${n}</span>`).join(" · ") || "No layers yet"}${b.note ? ` · ${esc(b.note)}` : ""}</div></div>`).join("")}</div>` : '<p class="small muted" style="margin:6px 0 0">No boxes recorded yet. Tap + Box as each box is packed.</p>'}
+      ${can("lead") && boxes.length && Number(j.shipped_qty) !== total ? `<button class="btn sm" id="boxsent" style="margin-top:8px">Use ${total} as amount sent</button>` : ""}
+    </div>`;
+  const lastLayers = boxes.length ? boxes[boxes.length - 1].layers.length : 3;
+  el.querySelector("#addbox")?.addEventListener("click", () => editBox(j, { box_no: (boxes.at(-1)?.box_no ?? 0) + 1, layers: Array(lastLayers || 3).fill("") }, reload));
+  el.querySelectorAll("[data-box]").forEach((d) => (d.onclick = () => editBox(j, boxes.find((b) => b.id === d.dataset.box), reload)));
+  el.querySelector("#boxsent")?.addEventListener("click", async () => {
+    const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+    const { error } = await sb.from("jobs").update({ shipped_qty: total, shipped_at: j.shipped_at ?? today, shipped_by: state.profile.id }).eq("id", j.id);
+    if (error) return toast(error.message);
+    log("update_job", "job", j.id, { shipped: total, from: "boxes" });
+    toast(`Amount sent: ${total}`); reload();
+  });
+}
+function editBox(j, b, reload) {
+  const layers = [...(b.layers ?? [])];
+  const draw = (root) => {
+    root.querySelector("#layers").innerHTML = layers.map((n, i) => `<div class="row" style="gap:8px;align-items:center">
+      <label style="margin:0;min-width:70px">Layer ${i + 1}</label>
+      <input data-l="${i}" type="number" min="0" step="1" inputmode="numeric" value="${esc(n)}" style="flex:1">
+      ${layers.length > 1 ? `<button type="button" class="btn icon sm" data-rm="${i}" aria-label="Remove layer ${i + 1}">×</button>` : ""}</div>`).join("");
+    const tot = () => layers.reduce((x, n) => x + Number(n || 0), 0);
+    root.querySelector("#btot").textContent = tot();
+    root.querySelectorAll("[data-l]").forEach((inp) => (inp.oninput = () => { layers[Number(inp.dataset.l)] = inp.value; root.querySelector("#btot").textContent = tot(); }));
+    root.querySelectorAll("[data-rm]").forEach((x) => (x.onclick = () => { layers.splice(Number(x.dataset.rm), 1); draw(root); }));
+  };
+  sheet(`<form class="stack" id="bf">
+    <h2 style="margin:0">${esc(j.title)}</h2>
+    <div class="grid2"><div><label>Box #</label><input name="box_no" type="number" min="1" step="1" inputmode="numeric" value="${esc(b.box_no)}" required></div>
+      <div><label>Total in box</label><div style="font-size:1.6rem;font-weight:800;padding-top:4px" id="btot">0</div></div></div>
+    <div><label>Pieces in each layer</label><div class="stack" id="layers" style="gap:6px"></div>
+      <button type="button" class="btn sm" id="addlayer" style="margin-top:6px">+ Layer</button></div>
+    <div><label>Note (optional)</label><input name="note" value="${esc(b.note)}" placeholder="e.g. 2 seconds on top"></div>
+    <div class="row wrap"><button class="btn primary">Save box</button><button type="button" class="btn" data-close>Cancel</button>
+      ${b.id ? '<button type="button" class="btn danger" id="delbox">Delete box</button>' : ""}</div>
+  </form>`, (root, close) => {
+    draw(root);
+    root.querySelector('[data-l="0"]')?.focus();
+    root.querySelector("#addlayer").onclick = () => { layers.push(""); draw(root); root.querySelector(`[data-l="${layers.length - 1}"]`)?.focus(); };
+    root.querySelector("#bf").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      const clean = layers.map((n) => Math.max(0, Math.round(Number(n || 0))));
+      while (clean.length > 1 && clean[clean.length - 1] === 0 && layers[clean.length - 1] === "") clean.pop();
+      const row = { job_id: j.id, box_no: Math.round(Number(f.box_no)), layers: clean, note: f.note || null, updated_by: state.profile.id, updated_at: new Date().toISOString() };
+      const { error } = b.id ? await sb.from("job_boxes").update(row).eq("id", b.id) : await sb.from("job_boxes").insert(row);
+      if (error) return toast(error.message);
+      log("pack_box", "job", j.id, { box: row.box_no, layers: clean, total: clean.reduce((a, n) => a + n, 0) });
+      toast(`Box ${row.box_no}: ${clean.reduce((a, n) => a + n, 0)} pieces`); close(); reload();
+    };
+    root.querySelector("#delbox")?.addEventListener("click", async () => {
+      if (!confirm(`Delete box ${b.box_no}?`)) return;
+      const { error } = await sb.from("job_boxes").delete().eq("id", b.id);
+      if (error) return toast(error.message);
+      close(); reload();
+    });
+  });
+}
+
 // A job made from a Shopify order shows that order's photos.
 async function fillJobPhotos(el, j) {
   if (!el) return;
@@ -1458,13 +1532,14 @@ async function reopenJob(id, done) {
 }
 
 // Final amount sent: what actually went out, so Brittany bills the real count.
-function recordShipped(j, after) {
+async function recordShipped(j, after) {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+  const boxTotal = isBoxJob(j) ? boxSum((await sb.from("job_boxes").select("layers").eq("job_id", j.id)).data ?? []) : 0;
   sheet(`
     <form class="stack" id="f"><h2>Final amount sent</h2>
-      <p class="small muted" style="margin:0">${esc(j.title)} · ordered ${j.quantity}</p>
+      <p class="small muted" style="margin:0">${esc(j.title)} · ordered ${j.quantity}${boxTotal ? ` · <strong>${boxTotal} counted in boxes</strong>` : ""}</p>
       <div class="grid2">
-        <div><label>Pieces sent</label><input name="shipped_qty" type="number" min="0" step="1" inputmode="numeric" value="${esc(j.shipped_qty ?? j.quantity)}" required></div>
+        <div><label>Pieces sent</label><input name="shipped_qty" type="number" min="0" step="1" inputmode="numeric" value="${esc(j.shipped_qty ?? (boxTotal || j.quantity))}" required></div>
         <div><label>Date sent</label><input name="shipped_at" type="date" value="${esc(j.shipped_at ?? today)}" required></div>
       </div>
       <div class="row wrap"><button class="btn primary">Save</button><button type="button" class="btn" data-close>Cancel</button>
@@ -1571,6 +1646,7 @@ async function viewJob(j, done) {
     if (!(steps ?? []).length) return '<div class="list"><div class="empty">No steps on this job.</div></div>';
     return `<div class="list">${(steps ?? []).map(stepHtml).join("")}</div>`;
     })()}
+    ${isBoxJob(j) ? '<div id="jobboxes"></div>' : ""}
     ${j.shopify_order_id ? '<div id="jobphotos"></div>' : ""}
     <h3 class="section" style="margin-bottom:4px">Job notes</h3>
     <div class="notes">${noteList(notesFor(null)) || '<p class="small muted" style="margin:0">No notes yet. Anything the next guy should know goes here.</p>'}${noteForm(null)}</div>
@@ -1587,6 +1663,7 @@ async function viewJob(j, done) {
     </div>`, (root, close) => {
     if (canMaterials()) fillJobMaterials(root.querySelector("#jobmat"), j);
     if (j.shopify_order_id) fillJobPhotos(root.querySelector("#jobphotos"), j);
+    if (isBoxJob(j)) fillJobBoxes(root.querySelector("#jobboxes"), j, () => { close(); reopenJob(j.id, done); });
     root.querySelectorAll("[data-start]").forEach((b) => (b.onclick = async () => {
       const { error } = await sb.rpc("job_timer_start", { p_step: b.dataset.start });
       if (error) return toast(error.message);
