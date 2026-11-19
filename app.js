@@ -41,6 +41,8 @@ const LOW_PRODUCTS = 9;
 // Wholesale: keep at least 10 of each on the shelf (reorder point 9 = "under 10"); an item can have its own number.
 const WHOLESALE_MIN = 10;
 const wholesaleMin = (i) => (i.reorder_point == null ? WHOLESALE_MIN : Number(i.reorder_point) < 0 ? 0 : Number(i.reorder_point) + 1);
+const WEBSITE_MIN = 10;
+const websiteMin = (i) => (i.reorder_point == null ? WEBSITE_MIN : Number(i.reorder_point) < 0 ? 0 : Number(i.reorder_point) + 1);
 const isLow = (i) => {
   const rp = i.reorder_point ?? (["shopify", "product"].includes(i.source) ? LOW_PRODUCTS : i.source === "wholesale" ? WHOLESALE_MIN - 1 : null);
   return rp != null && Number(rp) >= 0 && Number(i.quantity) <= Number(rp); // reorder point -1 = don't track
@@ -812,7 +814,7 @@ async function loadOpenOrders(force) {
   if (!force && c && Date.now() - c.at < 120000) return c;
   const [res, { data: inv }, { data: asg }] = await Promise.all([
     fnCall("shopify-inventory", { action: "open_orders" }),
-    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id, reorder_point").in("source", ["shopify", "wholesale", "product"]),
+    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id, reorder_point, category").in("source", ["shopify", "wholesale", "product"]),
     sb.from("order_assignments").select("*"),
   ]);
   const assign = Object.fromEntries((asg ?? []).map((a) => [a.shopify_order_id, a]));
@@ -847,7 +849,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   }
   const isMine = (o) => (assign[o.id]?.assignees ?? []).includes(state.profile.id);
   const list = orders.filter((o) => !!o.wholesale === wholesale).sort((a, b) => Number(isMine(b)) - Number(isMine(a)));
-  // Add up what's ordered per product, then compare to stock.
+  // Orders build list: what's ordered, compared to stock. Wholesale also restocks to 10 (see below).
   const need = {};
   list.forEach((o) => o.lines.forEach((l) => {
     const item = matchStock(l, inv, wholesale);
@@ -860,26 +862,39 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   // Wholesale keeps 10 of each on the shelf: restock items under 10 even with no open orders.
   if (wholesale) inv.filter((i) => i.source === "wholesale" && wholesaleMin(i) > 0 && !need[i.id] && Number(i.quantity) < wholesaleMin(i))
     .forEach((i) => (need[i.id] = { name: i.name, ordered: 0, stock: Number(i.quantity), orders: new Set(), min: wholesaleMin(i) }));
-  // Build = fill the orders, then get the shelf back to its minimum.
-  const rows = Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered + (r.min ?? 0) - Math.max(0, r.stock)) }))
-    .sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered);
-  const toBuild = rows.filter((r) => r.short > 0);
+  const sortRows = (rs) => rs.sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered || a.name.localeCompare(b.name));
+  const orderRows = sortRows(Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered + (r.min ?? 0) - Math.max(0, r.stock)) })));
+  // Website stock: every website product kept at 10 (Shopify's "available" count already has unshipped orders taken out).
+  const stockRows = wholesale ? [] : sortRows(inv.filter((i) => ["shopify", "product"].includes(i.source) && i.category !== "Merch" && websiteMin(i) > 0 && Number(i.quantity) < websiteMin(i))
+    .map((i) => ({ name: i.name, ordered: 0, stock: Number(i.quantity), orders: new Set(), min: websiteMin(i), short: websiteMin(i) - Math.max(0, Number(i.quantity)) })));
+  const lists = wholesale
+    ? [{ key: "wh", title: "Wholesale", rows: orderRows, orders: list, cols: "orders",
+        desc: `Open wholesale orders <strong>plus</strong> getting each wholesale item back to ${WHOLESALE_MIN} on the shelf.`, empty: "Nothing to build. Every wholesale item is at 10 or more and no orders are waiting. 🎉" }]
+    : [{ key: "so", title: "Shopify Orders", rows: orderRows, orders: list, cols: "orders",
+        desc: "Only what's on open website orders, compared to what's on the shelf.", empty: "No open website orders. 🎉" },
+       { key: "ws", title: "Website Stock", rows: stockRows, orders: [], cols: "stock",
+        desc: `Website products under ${WEBSITE_MIN} available. Build gets each one back to ${WEBSITE_MIN}. No orders in this list. Hats and shirts aren't included.`, empty: `Every website product has ${WEBSITE_MIN} or more. 🎉` }];
+  const buildCard = (L) => {
+    const tb = L.rows.filter((r) => r.short > 0), n = tb.reduce((a, r) => a + r.short, 0);
+    const head = L.cols === "stock" ? "<th>Product</th><th>On hand</th><th>Keep</th><th>Build</th>" : "<th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th>";
+    return `<details class="grp buildlist" style="margin-top:12px"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">🔨 ${L.title}</span>
+      <span class="grp-meta">${n ? `${n} to build` : "✓ nothing"}${L.cols === "orders" ? ` · ${L.orders.length} order${L.orders.length === 1 ? "" : "s"}` : ""}</span>
+      <button class="btn sm" data-print="${L.key}" aria-label="Print ${L.title} build list" style="margin-left:6px">🖨</button></summary>
+      <div style="padding:0 12px 12px">
+      <p class="small muted" style="margin:4px 0 8px">${L.desc}</p>
+      ${L.rows.length ? `<table><tr>${head}</tr>${L.rows.map((r, i) => `<tr>
+        <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ") || (r.min && L.cols === "orders" ? `Restock to ${r.min}` : "")}</div></td>
+        ${L.cols === "stock" ? `<td>${Math.max(0, r.stock)}</td><td>${r.min}</td>` : `<td>${r.ordered}</td><td>${r.stock == null ? '<span class="small muted">not tracked</span>' : r.stock}</td>`}
+        <td>${r.short == null ? "?" : r.short > 0 ? `<span class="badge bad">${r.short}</span>${can("lead") ? ` <button class="linkbtn" data-build="${L.key}:${i}">+ Job</button>` : ""}` : '<span class="badge ok">✓</span>'}</td></tr>`).join("")}</table>`
+        : `<p class="small muted" style="margin:0">${L.empty}</p>`}
+      ${tb.length ? `<p class="small" style="margin:8px 0 0"><strong>${n} pieces to build</strong> across ${tb.length} product${tb.length === 1 ? "" : "s"}.</p>` : ""}
+    </div></details>`;
+  };
   const age = (d) => Math.floor((Date.now() - new Date(d)) / 864e5);
   root.innerHTML = `
     ${topbar("Jobs", '<button class="btn sm" id="refresh">Refresh</button>')}
     ${chips}
-    <div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn sm" id="printbuild">🖨 Print build list</button></div>
-    <details class="grp buildlist" style="margin-top:12px"><summary><span class="grp-arrow" aria-hidden="true">▶</span><span class="grp-name">🔨 Build list</span>
-      <span class="grp-meta">${toBuild.length ? `${toBuild.reduce((a, r) => a + r.short, 0)} to build · ` : ""}${list.length} order${list.length === 1 ? "" : "s"}</span></summary>
-      <div style="padding:0 12px 12px">
-      <p class="small muted" style="margin:4px 0 8px">Everything ordered and not shipped yet, compared to what's in ${wholesale ? `wholesale inventory. Build covers the orders <strong>plus</strong> getting each item back to ${WHOLESALE_MIN} on the shelf` : "website inventory"}.</p>
-      ${rows.length ? `<table><tr><th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th></tr>${rows.map((r, i) => `<tr>
-        <td>${esc(r.name)}<div class="small muted">${[...r.orders].join(", ") || (r.min ? `Restock to ${r.min}` : "")}</div></td>
-        <td>${r.ordered}</td><td>${r.stock == null ? '<span class="small muted">not tracked</span>' : r.stock}</td>
-        <td>${r.short == null ? "?" : r.short > 0 ? `<span class="badge bad">${r.short}</span>${can("lead") ? ` <button class="linkbtn" data-build="${i}">+ Job</button>` : ""}` : '<span class="badge ok">✓</span>'}</td></tr>`).join("")}</table>`
-        : `<p class="small muted" style="margin:0">No open ${wholesale ? "wholesale" : "website"} orders. 🎉</p>`}
-      ${toBuild.length ? `<p class="small" style="margin:8px 0 0"><strong>${toBuild.reduce((a, r) => a + r.short, 0)} pieces to build</strong> across ${toBuild.length} product${toBuild.length === 1 ? "" : "s"}.</p>` : ""}
-    </div></details>
+    ${lists.map(buildCard).join("")}
     <h3 class="section" style="margin-bottom:4px">Open ${wholesale ? "wholesale" : "website"} orders</h3>
     <div class="list">${list.map((o) => {
       const d = age(o.created_at);
@@ -897,21 +912,25 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   wireTopbar(root); wire();
   const reload = () => { state.cache.openOrders = null; renderOpenOrders(root, chips, wholesale, true); };
   root.querySelectorAll("[data-order]").forEach((el) => (el.onclick = () => viewOrder(list.find((o) => o.id === el.dataset.order), assign[el.dataset.order], wholesale, reload)));
-  root.querySelector("#printbuild")?.addEventListener("click", () => printBuildList(rows, list, assign, wholesale));
+  const L = (k) => lists.find((x) => x.key === k);
+  root.querySelectorAll("[data-print]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); const x = L(b.dataset.print); printBuildList(x, assign); }));
   root.querySelectorAll("[data-build]").forEach((b) => (b.onclick = () => {
-    const r = rows[Number(b.dataset.build)];
-    editJob({ title: `${wholesale ? "Wholesale" : "Web"} – ${r.name}`, product: r.name, quantity: r.short, customer: wholesale ? [...r.orders].join(", ") : "Website orders", channel: wholesale ? "Retail" : "Web" }, () => { jobFilter = "Active"; renderJobs(root); });
+    const [k, i] = b.dataset.build.split(":"), r = L(k).rows[Number(i)];
+    editJob({ title: `${wholesale ? "Wholesale" : k === "ws" ? "Web stock" : "Web"} – ${r.name}`, product: r.name, quantity: r.short,
+      customer: [...r.orders].join(", ") || (wholesale ? "Wholesale stock" : k === "ws" ? "Website stock" : "Website orders"), channel: wholesale ? "Retail" : "Web" }, () => { jobFilter = "Active"; renderJobs(root); });
   }));
 }
 
 // Printable build list: big, black-on-white, a checkbox per line, then each open order (no prices).
-function printBuildList(rows, orders, assign, wholesale) {
-  const kind = wholesale ? "Wholesale" : "Website";
+function printBuildList(L, assign) {
+  const { rows, orders } = L, stock = L.cols === "stock";
+  const kind = L.title;
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric" });
   const build = rows.filter((r) => r.short > 0), other = rows.filter((r) => !(r.short > 0));
   const total = build.reduce((a, r) => a + r.short, 0);
-  const row = (r) => `<tr><td class="box">☐</td><td><b>${esc(r.name)}</b><div class="sub">${[...r.orders].join(", ")}${r.min ? `${r.orders.size ? " · " : ""}Restock to ${r.min}` : ""}</div></td>
-    <td class="n">${r.ordered}</td><td class="n">${r.stock == null ? "—" : Math.max(0, r.stock)}</td><td class="n big">${r.short == null ? "?" : r.short > 0 ? r.short : "✓"}</td></tr>`;
+  const row = (r) => `<tr><td class="box">☐</td><td><b>${esc(r.name)}</b><div class="sub">${[...r.orders].join(", ")}${r.min ? `${r.orders.size ? " · " : ""}Keep ${r.min}` : ""}</div></td>
+    ${stock ? "" : `<td class="n">${r.ordered}</td>`}<td class="n">${r.stock == null ? "—" : Math.max(0, r.stock)}</td><td class="n big">${r.short == null ? "?" : r.short > 0 ? r.short : "✓"}</td></tr>`;
+  const thead = `<tr><th></th><th>Product</th>${stock ? "" : '<th class="n">Ordered</th>'}<th class="n">On hand</th><th class="n">Build</th></tr>`;
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${kind} Build List – ${today}</title><style>
     @page { margin: 0.5in; }
     body { font: 13pt/1.35 -apple-system, "Segoe UI", Arial, sans-serif; color: #000; background: #fff; margin: 0; }
@@ -926,11 +945,11 @@ function printBuildList(rows, orders, assign, wholesale) {
     .order b { font-size: 13pt; } .order ul { margin: 4px 0 0 18px; padding: 0; } .note { font-size: 10.5pt; margin-top: 4px; font-style: italic; }
     .orders { columns: 2; column-gap: 14px; } .pb { break-before: page; }
   </style></head><body>
-    <h1>🔨 ${kind} Build List</h1><div class="meta">${today} · ${orders.length} open order${orders.length === 1 ? "" : "s"} · Montana Block Co.</div>
-    ${wholesale ? `<div class="meta">Build = what's ordered plus enough to keep ${WHOLESALE_MIN} of each item on the shelf.</div>` : ""}
-    ${build.length ? `<div class="tot"><b>${total} pieces to build</b> across ${build.length} product${build.length === 1 ? "" : "s"}</div>` : other.some((r) => r.short == null) ? '<div class="tot">No known shortages — check the shelf for the items marked "?"</div>' : '<div class="tot">Nothing to build — everything ordered is on the shelf.</div>'}
-    ${build.length ? `<h2>To build</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${build.map(row).join("")}</table>` : ""}
-    ${other.length ? `<h2>Already on the shelf / not tracked</h2><table><tr><th></th><th>Product</th><th class="n">Ordered</th><th class="n">On hand</th><th class="n">Build</th></tr>${other.map(row).join("")}</table>` : ""}
+    <h1>🔨 ${kind} Build List</h1><div class="meta">${today}${stock ? "" : ` · ${orders.length} open order${orders.length === 1 ? "" : "s"}`} · Montana Block Co.</div>
+    <div class="meta">${L.desc.replace(/<[^>]+>/g, "")}</div>
+    ${build.length ? `<div class="tot"><b>${total} pieces to build</b> across ${build.length} product${build.length === 1 ? "" : "s"}</div>` : other.some((r) => r.short == null) ? '<div class="tot">No known shortages — check the shelf for the items marked "?"</div>' : '<div class="tot">Nothing to build.</div>'}
+    ${build.length ? `<h2>To build</h2><table>${thead}${build.map(row).join("")}</table>` : ""}
+    ${other.length ? `<h2>Already on the shelf / not tracked</h2><table>${thead}${other.map(row).join("")}</table>` : ""}
     ${orders.length ? `<h2 class="pb">Open orders</h2><div class="orders">${orders.map((o) => {
       const who = (assign[o.id]?.assignees ?? []).map(nameOf).filter(Boolean);
       return `<div class="order">☐ <b>${esc(o.name)}</b> · ${esc(o.customer || "")}<div class="sub">${fmtDate(o.created_at.slice(0, 10))}${o.pickup ? " · Local pickup" : o.shipping ? " · " + esc(o.shipping) : ""}${who.length ? " · 👤 " + who.map(esc).join(", ") : ""}${assign[o.id]?.status && assign[o.id].status !== "Not started" ? " · " + esc(assign[o.id].status) : ""}</div>
