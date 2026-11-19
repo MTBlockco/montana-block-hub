@@ -1491,6 +1491,8 @@ async function viewJob(j, done) {
   const stepMin = (id) => (timers ?? []).filter((t) => t.step_id === id).reduce((a, t) => a + labor(t), 0);
   const totalMin = (timers ?? []).reduce((a, t) => a + labor(t), 0);
   const running = (timers ?? []).filter((t) => !t.ended_at);
+  // A completed job shows every step finished (also covers jobs completed before steps were filled in automatically).
+  if (j.status === "Complete") (steps ?? []).forEach((st) => { if (Number(st.done_qty ?? 0) < Number(j.quantity)) st.done_qty = j.quantity; });
   const pct = jobProgress(j, steps ?? []);
   sheet(`
     <div class="row between"><span class="badge ${j.status === "Complete" ? "ok" : ""}">${j.status === "Complete" ? "Complete" : "Active"}</span><button class="btn sm" data-close>Close</button></div>
@@ -1613,6 +1615,9 @@ async function viewJob(j, done) {
       if (j.shipped_qty == null) { toast("Record the final amount sent first."); return recordShipped(j, () => { close(); reopenJob(j.id, done); }); }
       const { error } = await sb.from("jobs").update({ status: "Complete", completed_at: new Date().toISOString() }).eq("id", j.id);
       if (error) return toast(error.message);
+      // Complete job = every step finished: bring each step's count up to the job quantity.
+      const behind = (steps ?? []).filter((st) => Number(st.done_qty ?? 0) < Number(j.quantity));
+      if (behind.length) await sb.from("job_steps").update({ done_qty: j.quantity }).eq("job_id", j.id).lt("done_qty", j.quantity);
       log("update_job", "job", j.id, { to: "Complete" }); toast("Job complete. Moved to COMPLETE."); close(); done?.();
     });
     root.querySelector("#reopen")?.addEventListener("click", async () => {
