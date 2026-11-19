@@ -819,7 +819,7 @@ async function loadOpenOrders(force) {
   if (!force && c && Date.now() - c.at < 120000) return c;
   const [res, { data: inv }, { data: asg }] = await Promise.all([
     fnCall("shopify-inventory", { action: "open_orders" }),
-    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id, reorder_point, category").in("source", ["shopify", "wholesale", "product"]),
+    sb.from("inventory_items").select("id, name, quantity, source, shopify_variant_id, reorder_point, category, on_website").in("source", ["shopify", "wholesale", "product"]),
     sb.from("order_assignments").select("*"),
   ]);
   const assign = Object.fromEntries((asg ?? []).map((a) => [a.shopify_order_id, a]));
@@ -834,7 +834,7 @@ function matchStock(line, inv, wholesale) {
   const n = normName(line.title + (line.variant ? " " + line.variant : "")), t = normName(line.title);
   const byName = (src) => inv.filter((i) => i.source === src).find((i) => normName(i.name) === n || normName(i.name) === t)
     ?? inv.filter((i) => i.source === src).find((i) => t.length > 3 && (normName(i.name).includes(t) || t.includes(normName(i.name))));
-  if (wholesale) return byName("wholesale") ?? byVariant ?? byName("shopify") ?? null;
+  if (wholesale) return byName("wholesale") ?? null; // wholesale = random-pattern stock only; never mixed with website stock
   return byVariant ?? byName("shopify") ?? null;
 }
 async function renderOpenOrders(root, chips, wholesale, force) {
@@ -870,7 +870,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
   const sortRows = (rs) => rs.sort((a, b) => (b.short ?? -1) - (a.short ?? -1) || b.ordered - a.ordered || a.name.localeCompare(b.name));
   const orderRows = sortRows(Object.values(need).map((r) => ({ ...r, short: r.stock == null ? null : Math.max(0, r.ordered + (r.min ?? 0) - Math.max(0, r.stock)) })));
   // Website stock: every website product kept at 10 (Shopify's "available" count already has unshipped orders taken out).
-  const stockRows = wholesale ? [] : sortRows(inv.filter((i) => ["shopify", "product"].includes(i.source) && isWoodProduct(i) && websiteMin(i) > 0 && Number(i.quantity) < websiteMin(i))
+  const stockRows = wholesale ? [] : sortRows(inv.filter((i) => i.source === "shopify" && i.on_website === true && isWoodProduct(i) && websiteMin(i) > 0 && Number(i.quantity) < websiteMin(i))
     .map((i) => ({ name: i.name, ordered: 0, stock: Number(i.quantity), orders: new Set(), min: websiteMin(i), short: websiteMin(i) - Math.max(0, Number(i.quantity)) })));
   const lists = wholesale
     ? [{ key: "wh", title: "Wholesale", rows: orderRows, orders: list, cols: "orders",
@@ -878,7 +878,7 @@ async function renderOpenOrders(root, chips, wholesale, force) {
     : [{ key: "so", title: "Shopify Orders", rows: orderRows, orders: list, cols: "orders",
         desc: "Only what's on open website orders, compared to what's on the shelf.", empty: "No open website orders. 🎉" },
        { key: "ws", title: "Website Stock", rows: stockRows, orders: [], cols: "stock",
-        desc: `Website products under ${WEBSITE_MIN} available. Build gets each one back to ${WEBSITE_MIN}. Wood products only (no oils, wax or merch) and no orders. Random Pattern pieces are on the Wholesale list.`, empty: `Every website product has ${WEBSITE_MIN} or more. 🎉` }];
+        desc: `Website products under ${WEBSITE_MIN} available. Build gets each one back to ${WEBSITE_MIN}. Only what's for sale on mtblock.com: wood products, no oils, wax or merch, no orders. Random pattern pieces are on the Wholesale list.`, empty: `Every website product has ${WEBSITE_MIN} or more. 🎉` }];
   const buildCard = (L) => {
     const tb = L.rows.filter((r) => r.short > 0), n = tb.reduce((a, r) => a + r.short, 0);
     const head = L.cols === "stock" ? "<th>Product</th><th>On hand</th><th>Keep</th><th>Build</th>" : "<th>Product</th><th>Ordered</th><th>On hand</th><th>Build</th>";

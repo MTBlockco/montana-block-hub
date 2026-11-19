@@ -57,7 +57,7 @@ async function sync(service: ReturnType<typeof createClient>) {
     const data = await gql(`query($after: String) {
       productVariants(first: 100, after: $after, query: "product_status:active") {
         pageInfo { hasNextPage endCursor }
-        nodes { id sku title media(first: 1) { nodes { preview { image { url } } } } inventoryItem { id tracked inventoryLevel(locationId: "${LOCATION}") { quantities(names: ["available"]) { quantity } } } product { title featuredMedia { preview { image { url } } } } }
+        nodes { id sku title media(first: 1) { nodes { preview { image { url } } } } inventoryItem { id tracked inventoryLevel(locationId: "${LOCATION}") { quantities(names: ["available"]) { quantity } } } product { title onlineStoreUrl featuredMedia { preview { image { url } } } } }
       } }`, { after });
     const pv = data.productVariants;
     for (const v of pv.nodes) {
@@ -76,6 +76,7 @@ async function sync(service: ReturnType<typeof createClient>) {
         unit: "ea",
         quantity: qty,
         source: "shopify",
+        on_website: !!v.product.onlineStoreUrl, // published on mtblock.com (vs. register-only / custom listings)
         synced_at: new Date().toISOString(),
       });
     }
