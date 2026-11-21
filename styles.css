@@ -312,3 +312,30 @@ details.stepdone .progress > span { background: var(--ok); }
 .readonly #ostatus, .readonly label:has(#ophoto), .readonly .billchk, .readonly [data-unbill], .readonly #complete, .readonly #reopen, .readonly #edit,
 .readonly #edit2, .readonly #lbreload, .readonly #lbdone, .readonly #lbstop, .readonly #ship, .readonly #billed, .readonly #arrange, .readonly [data-stepassign], .readonly [data-laser], .readonly #ojob,
 .readonly form[data-noteform], .readonly [data-edit-ann], .readonly [data-delnote], .readonly .pslot input, .readonly #boxsent { display: none !important; }
+
+/* ---- Forest green accent (Account > App colors). Remove the "forest" class to go back to classic walnut. ---- */
+html.forest {
+  --forest: #3f7a4c;        /* pine */
+  --forest-deep: #17271c;
+  --forest-ink: #eaf3ea;
+  --line: #2f3326;
+}
+html.forest body {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' viewBox='0 0 240 240'%3E%3Cg fill='none' stroke='%234f8a5c' stroke-opacity='.07' stroke-width='1'%3E%3Cpath d='M-20 60c40-30 80 30 120 0s80-30 160 0'/%3E%3Cpath d='M-20 110c50-25 90 25 130 0s90-35 150 0'/%3E%3Cpath d='M-20 160c40-35 90 35 130 0s80-25 150 5'/%3E%3Cpath d='M-20 210c45-30 85 30 125 0s85-30 155 0'/%3E%3C/g%3E%3C/svg%3E");
+}
+html.forest .wood {
+  background-image:
+    repeating-linear-gradient(92deg, rgba(255,255,255,.025) 0 2px, transparent 2px 7px),
+    repeating-linear-gradient(88deg, rgba(0,0,0,.08) 0 1px, transparent 1px 13px),
+    radial-gradient(ellipse 60% 120% at 20% 40%, rgba(255,210,160,.07), transparent 60%),
+    radial-gradient(ellipse 90% 70% at 70% 110%, rgba(63,122,76,.45), transparent 70%),
+    linear-gradient(180deg, var(--walnut-3), var(--walnut-1));
+}
+html.forest .hero .mtns path { fill: var(--forest-deep); }
+html.forest .tabbar { border-top-color: var(--forest); background: linear-gradient(180deg, #1d2219, var(--surface)); }
+html.forest .tabbar button.active { color: #9fd3a9; }
+html.forest .sidebar button.active { box-shadow: inset 3px 0 0 var(--forest); background: rgba(63,122,76,.22); }
+html.forest .card.accent { border-top-color: var(--forest); }
+html.forest .sheet { border-top-color: var(--forest); }
+html.forest details.grp .grp-arrow { background: var(--forest); color: var(--forest-ink); }
+html.forest .topbar h1 { border-bottom: 2px solid var(--forest); padding-bottom: 2px; }

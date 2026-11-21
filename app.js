@@ -10,6 +10,12 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 
+// ---------------------------------------------------------------- app colors (per phone/computer)
+// "forest" adds pine-green touches; "classic" is the original all-walnut look. Default: forest.
+const getTheme = () => { try { return localStorage.getItem("mb_theme") || "forest"; } catch { return "forest"; } };
+const applyTheme = (t) => document.documentElement.classList.toggle("forest", t === "forest");
+applyTheme(getTheme());
+
 // ---------------------------------------------------------------- view-only logins (the guest)
 // The database already refuses every change from a read-only login; this just stops the app from trying,
 // so nothing looks saved when it wasn't. Activity logging stays on so Mitchell can see what the guest viewed.
@@ -2994,12 +3000,19 @@ async function renderAccount(root) {
       <div class="small muted">${esc(p.email)} · ${ROLE_LABEL[p.role]}${p.title ? " · " + esc(p.title) : ""}</div></div>
     <div class="card" style="padding:10px;margin:0"><div class="row between"><span>🔔 Notifications <span class="small muted" id="nstate"></span></span><button class="btn sm primary" id="notif">Turn on</button></div>
       <p class="small muted" style="margin:4px 0 0">Lets this phone or computer get alerts (like the laser being done), even when it's locked.</p></div>
+    <div><label>App colors <span class="small muted">(this phone/computer)</span></label>
+      <div class="seg" id="theme">${[["forest", "🌲 Forest green"], ["classic", "Classic walnut"]].map(([k, l]) => `<button type="button" data-t="${k}" class="${getTheme() === k ? "active" : ""}">${l}</button>`).join("")}</div></div>
     <div class="row wrap"><button class="btn" id="pw">Change password</button><button class="btn" id="out">Sign out</button>
       ${OFFICE ? '<button class="btn" id="leaveoffice">Turn off office mode</button>' : ""}</div>
     ${OFFICE ? '<p class="small muted" style="margin:0">This computer is in office mode: no time clock or job timers. It stays signed in until someone taps Sign out.</p>' : ""}
     <p class="small muted" style="margin:0">To install: on iPhone, tap Share → Add to Home Screen. On Android or desktop Chrome, use the install icon in the address bar.</p>
   </div>`;
   root.querySelector("#pw").onclick = () => renderChangePassword(false);
+  root.querySelectorAll("#theme [data-t]").forEach((b) => (b.onclick = () => {
+    try { localStorage.setItem("mb_theme", b.dataset.t); } catch {}
+    applyTheme(b.dataset.t);
+    root.querySelectorAll("#theme [data-t]").forEach((x) => x.classList.toggle("active", x === b));
+  }));
   root.querySelector("#out").onclick = () => sb.auth.signOut();
   const nState = () => {
     const el = root.querySelector("#nstate"), btn = root.querySelector("#notif");
