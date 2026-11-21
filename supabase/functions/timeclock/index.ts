@@ -44,7 +44,10 @@ Deno.serve(async (req) => {
   const { service, user } = caller;
   const body = await req.json().catch(() => ({}));
 
-  const { data: me } = await service.from("profiles").select("square_team_member_id").eq("id", user.id).single();
+  const { data: me } = await service.from("profiles").select("square_team_member_id, read_only").eq("id", user.id).single();
+  // Read-only logins (the guest) can look but never punch: nothing reaches Square or the time records.
+  if (me?.read_only && !["status", "my_rate"].includes(body.action)) return json({ error: "This login is view-only." }, 403);
+  if (me?.read_only) return json(body.action === "status" ? { open: null, break: null } : { ok: true, rate: null });
   const tmId = me?.square_team_member_id as string | null;
   const { data: open } = await service.from("time_entries").select("*").eq("user_id", user.id).is("clock_out", null).maybeSingle();
   const openBreak = async () => (await service.from("time_breaks").select("*").eq("user_id", user.id).is("end_at", null).maybeSingle()).data;

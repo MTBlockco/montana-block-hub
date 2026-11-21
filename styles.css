@@ -305,3 +305,10 @@ details.grp > .list { padding: 0 8px 8px; }
 .jv-people { font-size: .9rem; }
 details.stepdone .progress > span { background: var(--ok); }
 .jobcard .billchk { display: inline-flex; align-items: center; gap: 6px; font-size: .9rem; font-weight: 600; color: var(--text); background: var(--surface-2); border: 1px solid var(--line, #3a2e25); border-radius: 999px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+.robanner { position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 60; background: var(--brass, #c9a45c); color: #1a120c; font-weight: 700; font-size: .8rem; padding: 4px 12px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 8px #0006; white-space: nowrap; }
+/* View-only login: hide the controls that change things. The database refuses changes either way. */
+.readonly #new, .readonly #newprod, .readonly #new2, .readonly [data-adj], .readonly [data-set], .readonly #sync, .readonly #addAnn,
+.readonly [data-start], .readonly [data-stop], .readonly [data-fix], .readonly [data-build], .readonly #addbox, .readonly #oassign, .readonly #assign,
+.readonly #ostatus, .readonly label:has(#ophoto), .readonly .billchk, .readonly [data-unbill], .readonly #complete, .readonly #reopen, .readonly #edit,
+.readonly #edit2, .readonly #lbreload, .readonly #lbdone, .readonly #lbstop, .readonly #ship, .readonly #billed, .readonly #arrange, .readonly [data-stepassign], .readonly [data-laser], .readonly #ojob,
+.readonly form[data-noteform], .readonly [data-edit-ann], .readonly [data-delnote], .readonly .pslot input, .readonly #boxsent { display: none !important; }

@@ -10,6 +10,33 @@ const sb = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
 });
 
+// ---------------------------------------------------------------- view-only logins (the guest)
+// The database already refuses every change from a read-only login; this just stops the app from trying,
+// so nothing looks saved when it wasn't. Activity logging stays on so Mitchell can see what the guest viewed.
+const RO = () => !!state?.profile?.read_only;
+const VIEW_ONLY = "This is a view-only login. Nothing can be changed.";
+function enableReadOnly() {
+  if (sb.__ro) return; sb.__ro = true;
+  const refused = () => {
+    const res = { data: null, error: { message: VIEW_ONLY }, count: 0 };
+    const p = new Proxy(function () {}, {
+      get: (_t, k) => (k === "then" ? (ok, bad) => Promise.resolve(res).then(ok, bad) : () => p),
+      apply: () => p,
+    });
+    return p;
+  };
+  const from = sb.from.bind(sb);
+  sb.from = (table) => {
+    const q = from(table);
+    if (table === "activity_log" || table === "ai_usage") return q;
+    for (const m of ["insert", "update", "upsert", "delete"]) q[m] = () => { toast(VIEW_ONLY); return refused(); };
+    return q;
+  };
+  const sfrom = sb.storage.from.bind(sb.storage);
+  sb.storage.from = (b) => { const s = sfrom(b); for (const m of ["upload", "update", "remove", "move"]) s[m] = async () => ({ data: null, error: { message: VIEW_ONLY } }); return s; };
+  document.documentElement.classList.add("readonly");
+}
+
 // ---------------------------------------------------------------- helpers
 const $app = document.getElementById("app");
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -204,6 +231,7 @@ async function start() {
   if (!state.session) return renderLogin();
   const { data: profile } = await sb.from("profiles").select("*").eq("id", state.session.user.id).single();
   state.profile = profile;
+  if (profile?.read_only) enableReadOnly();
   if (!profile || !profile.active || profile.role === "pending") return renderPending();
   if (profile.must_change_password) return renderChangePassword(true);
   const hash = location.hash.slice(1);
@@ -286,8 +314,9 @@ function renderShell() {
   $app.innerHTML = `
   <div class="shell">
     <nav class="sidebar wood">${logoImg("logo")}${nav("sidebar")}<div class="spacer"></div>
-      <div class="small who">${OFFICE ? "🖥 Office computer<br>" : ""}${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
+      <div class="small who">${OFFICE ? "🖥 Office computer<br>" : ""}${RO() ? "👁 View only<br>" : ""}${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
     <main class="main" id="view"><div class="empty">Loading…</div></main>
+    ${RO() ? '<div class="robanner">👁 View only</div>' : ""}
     <nav class="tabbar">${shown().filter(([k]) => k !== "more").map(([k, v]) =>
       `<button data-go="${k}" class="${state.view === k ? "active" : ""}">${v.icon}<span>${v.label}</span></button>`).join("")}</nav>
   </div>`;
@@ -342,7 +371,7 @@ async function renderHome(root) {
       <p class="saying">${esc(sayingFor())}</p>
       ${MTNS}
     </section>
-    ${OFFICE ? "" : `<div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
+    ${OFFICE || RO() ? "" : `<div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
     <div id="mytimer" class="section"></div>`}
     <div id="reqalert"></div>
     ${state.profile.extra_clock && !OFFICE ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
@@ -364,12 +393,12 @@ async function renderHome(root) {
         ${jobRows(dueSoon) || '<p class="muted small">Nothing due in the next 7 days.</p>'}</div>
     </div>`;
   wireTopbar(root);
-  if (!OFFICE) renderClock(root.querySelector("#clock"));
+  if (!OFFICE && !RO()) renderClock(root.querySelector("#clock"));
   if (state.profile.extra_clock && !OFFICE) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
   root.querySelectorAll("[data-job]").forEach((b) => (b.onclick = () => viewJob((jobs.data ?? []).find((j) => j.id === b.dataset.job), () => renderShell())));
-  if (!OFFICE) renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
+  if (!OFFICE && !RO()) renderMyTimer(root.querySelector("#mytimer"), () => renderShell());
   if (myOrders.length) fillMyOrders(root, myOrders, myJobs.length);
   if (can("admin")) sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open").then(({ count }) => {
     const el = root.querySelector("#reqalert"); if (!el || !count) return;
