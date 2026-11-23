@@ -2970,10 +2970,88 @@ function editSop(s = {}) {
 }
 
 // ---------------------------------------------------------------- Ask Claude
+// Parses "1 3/4", "3/4", "1.75", "1-3/4", "8/4" -> number (inches)
+function parseLen(v) {
+  v = String(v ?? "").trim().replace(/["”]/g, "").replace(/(\d)-(\d+\/)/, "$1 $2");
+  if (!v) return NaN;
+  const m = v.match(/^(\d+(?:\.\d+)?)?\s*(?:(\d+)\s*\/\s*(\d+))?$/);
+  if (!m || (!m[1] && !m[2])) return NaN;
+  return (m[1] ? +m[1] : 0) + (m[2] ? +m[2] / +m[3] : 0);
+}
+// inches -> nearest 1/den as a reduced fraction string
+function toFrac(inches, den = 32) {
+  const neg = inches < 0; let n = Math.round(Math.abs(inches) * den);
+  const whole = Math.floor(n / den); let r = n % den, d = den;
+  while (r && r % 2 === 0) { r /= 2; d /= 2; }
+  const s = (whole ? whole : "") + (r ? `${whole ? " " : ""}${r}/${d}` : "") || "0";
+  return (neg ? "-" : "") + s + '"';
+}
+const fmtN = (n, p = 2) => (Math.round(n * 10 ** p) / 10 ** p).toLocaleString(undefined, { maximumFractionDigits: p });
+
+function renderCalcs(el) {
+  el.innerHTML = `
+    <div class="card">
+      <h3 style="margin-top:0">Board Foot Calculator</h3>
+      <div class="chips" style="flex-wrap:wrap;margin-bottom:8px">${["4/4", "5/4", "6/4", "8/4", "10/4", "12/4", "16/4"].map((q) => `<button type="button" class="chip" data-q="${q}">${q}</button>`).join("")}</div>
+      <div class="grid2">
+        <div><label>Thickness (in)</label><input id="bt" inputmode="decimal" placeholder='e.g. 1 3/4 or 8/4' value="1"></div>
+        <div><label>Width (in)</label><input id="bw" inputmode="decimal" placeholder="e.g. 6 1/2"></div>
+        <div><label>Length</label><div class="row"><input id="bl" inputmode="decimal" placeholder="e.g. 96" style="flex:1"><select id="blu" style="width:auto"><option value="in">in</option><option value="ft">ft</option></select></div></div>
+        <div><label>Pieces</label><input id="bq" inputmode="numeric" value="1"></div>
+      </div>
+      <div id="bfout" class="calc-out"></div>
+      <p class="small muted" style="margin-bottom:0">Board feet = thickness × width × length (in) ÷ 144. Quarters: 4/4 = 1", 8/4 = 2".</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">MM ⇄ Inch Converter</h3>
+      <div class="grid2">
+        <div><label>Millimeters</label><input id="mm" inputmode="decimal" placeholder="e.g. 19"></div>
+        <div><label>Inches (decimal or fraction)</label><input id="inch" inputmode="decimal" placeholder='e.g. 3/4 or 1.5'></div>
+      </div>
+      <div id="mmout" class="calc-out"></div>
+      <p class="small muted" style="margin-bottom:0">Fractions are rounded to the nearest 1/32".</p>
+    </div>`;
+  const $ = (s) => el.querySelector(s);
+  const bf = () => {
+    const t = parseLen($("#bt").value), w = parseLen($("#bw").value);
+    let l = parseLen($("#bl").value); if ($("#blu").value === "ft") l *= 12;
+    const q = parseLen($("#bq").value) || 1;
+    if (!(t > 0 && w > 0 && l > 0)) { $("#bfout").innerHTML = '<span class="muted">Enter thickness, width and length.</span>'; return; }
+    const each = (t * w * l) / 144;
+    $("#bfout").innerHTML = `<div class="calc-big">${fmtN(each * q)} BF</div><div class="small muted">${q > 1 ? `${fmtN(each)} BF each × ${q} pcs · ` : ""}${fmtN(l / 12)} ft long</div>`;
+  };
+  ["#bt", "#bw", "#bl", "#bq"].forEach((s) => ($(s).oninput = bf));
+  $("#blu").onchange = bf;
+  el.querySelectorAll("[data-q]").forEach((b) => (b.onclick = () => { $("#bt").value = b.dataset.q; bf(); }));
+  const showIn = (inches, mm) => {
+    const frac = toFrac(inches), off = (Math.round(inches * 32) / 32 - inches) * 25.4;
+    $("#mmout").innerHTML = `<div class="calc-big">${fmtN(mm)} mm = ${frac}</div><div class="small muted">${fmtN(inches, 4)}" decimal${Math.abs(off) > 0.005 ? ` · fraction is ${off > 0 ? "+" : ""}${fmtN(off)} mm off` : " · exact"}</div>`;
+  };
+  $("#mm").oninput = () => {
+    const mm = parseFloat($("#mm").value);
+    if (!(mm >= 0)) { $("#mmout").innerHTML = ""; $("#inch").value = ""; return; }
+    $("#inch").value = fmtN(mm / 25.4, 4); showIn(mm / 25.4, mm);
+  };
+  $("#inch").oninput = () => {
+    const i = parseLen($("#inch").value);
+    if (!(i >= 0)) { $("#mmout").innerHTML = ""; $("#mm").value = ""; return; }
+    $("#mm").value = fmtN(i * 25.4); showIn(i, i * 25.4);
+  };
+  bf();
+}
+
 async function renderAsk(root) {
+  if (state.askTab === "calc") {
+    root.innerHTML = `${topbar("Ask")}<div class="seg" id="asktab" style="margin-bottom:10px"><button data-t="chat">ASK CLAUDE</button><button class="active" data-t="calc">CALCULATORS</button></div><div id="calcs"></div>`;
+    wireTopbar(root);
+    root.querySelectorAll("#asktab [data-t]").forEach((b) => (b.onclick = () => { state.askTab = b.dataset.t; renderAsk(root); }));
+    renderCalcs(root.querySelector("#calcs"));
+    return;
+  }
   const bubbles = () => state.chat.map((m) => `<div class="bubble ${m.role === "user" ? "me" : "ai"}">${esc(m.content)}</div>`).join("");
   root.innerHTML = `
     ${topbar("Ask Claude", state.chat.length ? '<button class="btn sm" id="clear">New chat</button>' : "")}
+    <div class="seg" id="asktab" style="margin-bottom:10px"><button class="active" data-t="chat">ASK CLAUDE</button><button data-t="calc">CALCULATORS</button></div>
     ${state.chat.length ? "" : `<div class="card"><p style="margin-top:0">Ask about procedures, inventory, jobs or reminders. Answers come from the hub's own records.</p>
       <div class="chips" style="flex-wrap:wrap">${["What's the finish schedule for walnut?", "How much 8/4 maple do we have?", "Which jobs are due this week?"].map((s) => `<button class="chip" data-s="${esc(s)}">${esc(s)}</button>`).join("")}</div></div>`}
     <div class="chat" id="chat">${bubbles()}</div>
@@ -2983,6 +3061,7 @@ async function renderAsk(root) {
   const form = root.querySelector("#f");
   const input = form.querySelector("input");
   root.querySelector("#clear")?.addEventListener("click", () => { state.chat = []; renderAsk(root); });
+  root.querySelectorAll("#asktab [data-t]").forEach((b) => (b.onclick = () => { state.askTab = b.dataset.t; renderAsk(root); }));
   root.querySelectorAll("[data-s]").forEach((b) => (b.onclick = () => { input.value = b.dataset.s; form.requestSubmit(); }));
   form.onsubmit = async (e) => {
     e.preventDefault();

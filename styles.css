@@ -354,3 +354,5 @@ html.forest .topbar h1 { border-bottom: 2px solid var(--forest); padding-bottom:
 .todo-sub > summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
 html.forest .todos { border-left: 3px solid var(--forest); }
 .readonly .todo-chk { pointer-events: none; }
+.calc-out { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-2); min-height: 24px; }
+.calc-big { font-family: Oswald, Inter, sans-serif; font-size: 1.5rem; color: var(--accent); }
