@@ -379,6 +379,7 @@ async function renderHome(root) {
     </section>
     ${OFFICE || RO() ? "" : `<div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
     <div id="mytimer" class="section"></div>`}
+    <div id="todos" class="section"></div>
     <div id="reqalert"></div>
     ${state.profile.extra_clock && !OFFICE ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
     <div class="stack section">
@@ -400,6 +401,7 @@ async function renderHome(root) {
     </div>`;
   wireTopbar(root);
   if (!OFFICE && !RO()) renderClock(root.querySelector("#clock"));
+  renderTodos(root.querySelector("#todos"));
   if (state.profile.extra_clock && !OFFICE) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
@@ -410,6 +412,92 @@ async function renderHome(root) {
     const el = root.querySelector("#reqalert"); if (!el || !count) return;
     el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
     el.querySelector("#goreq").onclick = () => { state.moreOpen = "requests"; go("more"); };
+  });
+}
+
+// ---------------------------------------------------------------- To-dos (Home)
+// Notes and to-dos left for each other. Only the writer and the person it's for can see it; "Everyone" shows to the whole team.
+let todoShowDone = false;
+async function renderTodos(el) {
+  if (!el) return;
+  await loadProfiles();
+  const me = state.profile.id;
+  const { data } = await sb.from("todos").select("*").order("done_at", { ascending: true, nullsFirst: true }).order("due_date", { ascending: true, nullsFirst: false }).order("created_at", { ascending: false }).limit(200);
+  const all = data ?? [];
+  const open = all.filter((t) => !t.done_at);
+  const forMe = open.filter((t) => t.assigned_to === me || t.for_everyone || (!t.assigned_to && t.created_by === me));
+  const fromMe = open.filter((t) => t.created_by === me && t.assigned_to && t.assigned_to !== me);
+  const done = all.filter((t) => t.done_at).sort((a, b) => new Date(b.done_at) - new Date(a.done_at)).slice(0, 10);
+  const who = (id) => (nameOf(id) || "someone").split(" ")[0];
+  const due = (t) => t.due_date ? ` <span class="badge ${daysUntil(t.due_date) < 0 ? "bad" : daysUntil(t.due_date) <= 1 ? "warn" : ""}">${daysUntil(t.due_date) === 0 ? "Today" : daysUntil(t.due_date) === 1 ? "Tomorrow" : fmtDate(t.due_date)}</span>` : "";
+  const row = (t, mine) => `<div class="todo ${t.done_at ? "done" : ""}" data-todo="${t.id}">
+    <button class="todo-chk" data-chk="${t.id}" aria-label="${t.done_at ? "Mark not done" : "Mark done"}">${t.done_at ? "✓" : ""}</button>
+    <div class="todo-body"><div class="todo-title">${esc(t.title)}${t.done_at ? "" : due(t)}</div>
+      ${t.note ? `<div class="small" style="white-space:pre-wrap">${esc(t.note)}</div>` : ""}
+      <div class="small muted">${t.done_at ? `Done by ${esc(who(t.done_by))} ${new Date(t.done_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+        : mine ? `For ${t.for_everyone ? "everyone" : esc(who(t.assigned_to))}` : t.created_by === me ? (t.for_everyone ? "For everyone · from you" : "Note to self") : `From ${esc(who(t.created_by))}${t.for_everyone ? " · for everyone" : ""}`}</div></div></div>`;
+  el.innerHTML = `<div class="card todos">
+    <div class="row between"><h2 style="margin:0">📝 To-Do</h2>${RO() ? "" : '<button class="btn sm primary" id="addtodo">+ Add</button>'}</div>
+    ${forMe.length ? `<div class="todo-list">${forMe.map((t) => row(t, false)).join("")}</div>` : '<p class="small muted" style="margin:8px 0 0">Nothing on your list. 👍</p>'}
+    ${fromMe.length ? `<details class="todo-sub"><summary class="small">You asked others · ${fromMe.length} open</summary><div class="todo-list">${fromMe.map((t) => row(t, true)).join("")}</div></details>` : ""}
+    ${done.length ? `<details class="todo-sub" ${todoShowDone ? "open" : ""}><summary class="small">Recently done · ${done.length}</summary><div class="todo-list">${done.map((t) => row(t, t.created_by === me && t.assigned_to && t.assigned_to !== me)).join("")}</div></details>` : ""}
+  </div>`;
+  el.querySelector("#addtodo")?.addEventListener("click", () => editTodo({}, () => renderTodos(el)));
+  el.querySelectorAll("[data-chk]").forEach((b) => (b.onclick = async (e) => {
+    e.stopPropagation();
+    const t = all.find((x) => x.id === b.dataset.chk);
+    const patch = t.done_at ? { done_at: null, done_by: null } : { done_at: new Date().toISOString(), done_by: me };
+    b.closest(".todo").classList.toggle("done", !t.done_at);
+    const { error } = await sb.from("todos").update(patch).eq("id", t.id);
+    if (error) return toast(error.message);
+    if (!t.done_at) log("todo_done", "todo", t.id, { title: t.title });
+    setTimeout(() => renderTodos(el), 350);
+  }));
+  el.querySelectorAll("[data-todo]").forEach((d) => (d.onclick = () => {
+    const t = all.find((x) => x.id === d.dataset.todo);
+    if (RO()) return;
+    editTodo(t, () => renderTodos(el));
+  }));
+  el.querySelectorAll("details.todo-sub").forEach((d) => d.addEventListener("toggle", () => { if (/Recently/.test(d.querySelector("summary").textContent)) todoShowDone = d.open; }));
+}
+function editTodo(t, done) {
+  const me = state.profile.id;
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/guest/i.test(p.full_name ?? ""));
+  const canEdit = !t.id || t.created_by === me || can("admin");
+  const brit = people.find((p) => /^brittany/i.test(p.full_name ?? ""));
+  const sel = t.id ? (t.for_everyone ? "everyone" : t.assigned_to ?? me) : (me !== brit?.id && brit ? brit.id : me);
+  sheet(`<form class="stack" id="tf">
+    <h2 style="margin:0">${t.id ? "To-do" : "New to-do or note"}</h2>
+    <div><label>What needs doing</label><input name="title" value="${esc(t.title)}" required ${canEdit ? "" : "readonly"} placeholder="e.g. Call Uline about the box order"></div>
+    <div><label>Note (optional)</label><textarea name="note" style="min-height:70px" ${canEdit ? "" : "readonly"}>${esc(t.note)}</textarea></div>
+    <div class="grid2">
+      <div><label>For</label><select name="for" ${canEdit ? "" : "disabled"}>
+        ${people.map((p) => `<option value="${p.id}" ${sel === p.id ? "selected" : ""}>${p.id === me ? "Me" : esc(p.full_name)}</option>`).join("")}
+        <option value="everyone" ${sel === "everyone" ? "selected" : ""}>Everyone</option></select></div>
+      <div><label>Due (optional)</label><input name="due_date" type="date" value="${esc(t.due_date)}" ${canEdit ? "" : "readonly"}></div>
+    </div>
+    ${t.id ? `<p class="small muted" style="margin:0">From ${esc(nameOf(t.created_by) || "someone")} · ${new Date(t.created_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>` : ""}
+    <div class="row wrap">${canEdit ? '<button class="btn primary">Save</button>' : ""}<button type="button" class="btn" data-close>${canEdit ? "Cancel" : "Close"}</button>
+      ${t.id && (t.created_by === me || can("admin")) ? '<button type="button" class="btn danger" id="deltodo">Delete</button>' : ""}</div>
+  </form>`, (root, close) => {
+    root.querySelector('[name="title"]').focus();
+    root.querySelector("#tf").onsubmit = async (e) => {
+      e.preventDefault();
+      if (!canEdit) return close();
+      const f = formData(e.target);
+      const row = { title: f.title.trim(), note: f.note?.trim() || null, due_date: f.due_date || null,
+        for_everyone: f.for === "everyone", assigned_to: f.for === "everyone" ? null : f.for };
+      const { error } = t.id ? await sb.from("todos").update(row).eq("id", t.id) : await sb.from("todos").insert({ ...row, created_by: me });
+      if (error) return toast(error.message);
+      if (!t.id) log("todo_add", "todo", null, { title: row.title, for: row.for_everyone ? "everyone" : nameOf(row.assigned_to) });
+      toast(t.id ? "Saved" : row.assigned_to && row.assigned_to !== me ? `Added for ${nameOf(row.assigned_to).split(" ")[0]}` : "Added"); close(); done?.();
+    };
+    root.querySelector("#deltodo")?.addEventListener("click", async () => {
+      if (!confirm("Delete this to-do?")) return;
+      const { error } = await sb.from("todos").delete().eq("id", t.id);
+      if (error) return toast(error.message);
+      close(); done?.();
+    });
   });
 }
 

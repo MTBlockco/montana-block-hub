@@ -339,3 +339,18 @@ html.forest .card.accent { border-top-color: var(--forest); }
 html.forest .sheet { border-top-color: var(--forest); }
 html.forest details.grp .grp-arrow { background: var(--forest); color: var(--forest-ink); }
 html.forest .topbar h1 { border-bottom: 2px solid var(--forest); padding-bottom: 2px; }
+
+/* To-Do (Home) */
+.todos .todo-list { display: flex; flex-direction: column; margin-top: 8px; }
+.todo { display: flex; gap: 12px; align-items: flex-start; padding: 10px 2px; border-top: 1px solid var(--line); cursor: pointer; }
+.todo:first-child { border-top: 0; }
+.todo-chk { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 2px solid var(--muted); background: transparent; color: var(--accent-ink);
+  font-weight: 800; font-size: 16px; line-height: 1; cursor: pointer; display: grid; place-items: center; margin-top: 1px; }
+.todo-body { flex: 1; min-width: 0; }
+.todo-title { font-weight: 600; }
+.todo.done .todo-chk { background: var(--ok); border-color: var(--ok); }
+.todo.done .todo-title { text-decoration: line-through; color: var(--muted); }
+.todo-sub { margin-top: 8px; }
+.todo-sub > summary { cursor: pointer; color: var(--muted); padding: 4px 0; }
+html.forest .todos { border-left: 3px solid var(--forest); }
+.readonly .todo-chk { pointer-events: none; }
