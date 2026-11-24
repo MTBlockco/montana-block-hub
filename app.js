@@ -2988,6 +2988,14 @@ function toFrac(inches, den = 32) {
 }
 const fmtN = (n, p = 2) => (Math.round(n * 10 ** p) / 10 ** p).toLocaleString(undefined, { maximumFractionDigits: p });
 
+// Epoxy per piece, from the shop whiteboard (Nov 2026)
+const EPOXY_RATES = [
+  { label: '24" rails', short: '24" rails', oz: 1, per: "each" },
+  { label: '16" rails', short: '16" rails', oz: 0.8, per: "each" },
+  { label: "Countertop stands", short: "stands", oz: 0.5, per: "each" },
+  { label: "Knife blocks (tables)", short: "knife block tables", oz: 25, per: "per table" },
+];
+
 function renderCalcs(el) {
   el.innerHTML = `
     <div class="card">
@@ -3010,6 +3018,12 @@ function renderCalcs(el) {
       </div>
       <div id="mmout" class="calc-out"></div>
       <p class="small muted" style="margin-bottom:0">Fractions are rounded to the nearest 1/32".</p>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0">Epoxy Calculator</h3>
+      <div class="grid2">${EPOXY_RATES.map((r, i) => `<div><label>${r.label} <span class="muted" style="font-weight:400">(${r.oz} oz ${r.per})</span></label><input data-ep="${i}" inputmode="numeric" placeholder="0"></div>`).join("")}</div>
+      <div id="epout" class="calc-out"></div>
+      <p class="small muted" style="margin-bottom:0">Total mixed epoxy, from the shop's whiteboard amounts.</p>
     </div>`;
   const $ = (s) => el.querySelector(s);
   const bf = () => {
@@ -3037,7 +3051,16 @@ function renderCalcs(el) {
     if (!(i >= 0)) { $("#mmout").innerHTML = ""; $("#mm").value = ""; return; }
     $("#mm").value = fmtN(i * 25.4); showIn(i, i * 25.4);
   };
-  bf();
+  const ep = () => {
+    let tot = 0; const parts = [];
+    el.querySelectorAll("[data-ep]").forEach((inp) => {
+      const n = parseFloat(inp.value) || 0, r = EPOXY_RATES[+inp.dataset.ep];
+      if (n > 0) { tot += n * r.oz; parts.push(`${n} ${r.short} × ${r.oz} oz = ${fmtN(n * r.oz, 1)} oz`); }
+    });
+    $("#epout").innerHTML = tot ? `<div class="calc-big">${fmtN(tot, 1)} oz epoxy</div><div class="small muted">${parts.join("<br>")}</div>` : '<span class="muted">Enter how many pieces you\'re pouring.</span>';
+  };
+  el.querySelectorAll("[data-ep]").forEach((i) => (i.oninput = ep));
+  bf(); ep();
 }
 
 async function renderAsk(root) {
