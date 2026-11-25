@@ -415,6 +415,11 @@ async function renderHome(root) {
     el.innerHTML = `<div class="card section row between" style="cursor:pointer" id="goreq"><span>🕑 <strong>${count}</strong> time card edit request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`;
     el.querySelector("#goreq").onclick = () => { state.moreOpen = "requests"; go("more"); };
   });
+  if (can("admin")) sb.from("time_off_requests").select("id", { count: "exact", head: true }).eq("status", "pending").then(({ count }) => {
+    const el = root.querySelector("#reqalert"); if (!el || !count) return;
+    el.insertAdjacentHTML("beforeend", `<div class="card section row between" style="cursor:pointer" id="gooff"><span>🌴 <strong>${count}</strong> time off request${count > 1 ? "s" : ""} waiting</span><span class="badge warn">Review</span></div>`);
+    el.querySelector("#gooff").onclick = () => { state.moreOpen = "timeclock"; go("more"); };
+  });
 }
 
 // ---------------------------------------------------------------- To-dos (Home)
@@ -3223,9 +3228,10 @@ async function renderAsk(root) {
 async function renderMore(root) {
   const sections = [
     { k: "account", label: "My account" },
-    ...(OFFICE ? [] : [{ k: "hours", label: "My hours" }]),
+    ...(OFFICE ? [] : [{ k: "hours", label: "My hours & time off" }]),
+    { k: "handbook", label: "📘 Employee handbook" },
     ...(isOwner() ? [{ k: "processes", label: "Processes (names & order)" }] : []),
-    ...(can("admin") ? [{ k: "timeclock", label: "Time clock (everyone)" }, { k: "requests", label: "Time card edit requests" }, { k: "admininfo", label: "Admin info (passwords & logins)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
+    ...(can("admin") ? [{ k: "timeclock", label: "Time clock & calendar (everyone)" }, { k: "requests", label: "Time card edit requests" }, { k: "admininfo", label: "Admin info (passwords & logins)" }, { k: "team", label: "Team & logins" }, { k: "activity", label: "Activity & usage" }] : []),
   ];
   const openReq = can("admin") ? (await sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open")).count ?? 0 : 0;
   root.innerHTML = `${topbar("More")}
@@ -3236,7 +3242,7 @@ async function renderMore(root) {
   const open = async (k) => {
     root.querySelectorAll("[data-sec]").forEach((el) => (el.style.borderColor = el.dataset.sec === k ? "var(--accent)" : ""));
     sec.innerHTML = '<div class="empty">Loading…</div>';
-    await ({ processes: renderProcesses, account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, requests: renderTimecardRequests, admininfo: renderAdminInfo, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
+    await ({ handbook: renderHandbook, processes: renderProcesses, account: renderAccount, hours: renderMyHours, timeclock: renderTimeclockAdmin, requests: renderTimecardRequests, admininfo: renderAdminInfo, suppliers: renderSuppliers, team: renderTeam, activity: renderActivity }[k])(sec);
   };
   root.querySelectorAll("[data-sec]").forEach((b) => (b.onclick = () => open(b.dataset.sec)));
   open(state.moreOpen || "account"); state.moreOpen = null;
@@ -3346,7 +3352,9 @@ async function attachBreaks(entries) {
 const sqBadge = (e) => e.square_status === "synced" ? '<span class="badge ok">Square ✓</span>' : e.square_status === "error" ? `<span class="badge bad" title="${esc(e.square_error)}">Square ✗</span>` : '<span class="badge">Not in Square yet</span>';
 
 async function renderMyHours(root) {
+  await loadProfiles();
   await renderMyHoursInner(root);
+  await renderMyTimeOff(root);
   const { data: reqs } = await sb.from("timecard_requests").select("*").eq("user_id", state.profile.id).order("created_at", { ascending: false }).limit(10);
   root.insertAdjacentHTML("afterbegin", `<div class="card stack" style="margin-bottom:12px">
     <div class="row between"><h2 style="margin:0">Something wrong on your time card?</h2><button class="btn sm primary" id="reqedit">Request time card edit</button></div>
@@ -3367,6 +3375,161 @@ async function renderMyHours(root) {
       log("timecard_request", "timecard", null, { date: f.work_date });
       toast("Sent. Brittany will take care of it."); close(); renderMyHours(root);
     };
+  });
+}
+
+// ---------------------------------------------------------------- Time off
+const dayKey = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: "America/Denver" });
+const fmtRange = (a, b) => a === b ? fmtDate(a) : `${fmtDate(a)} – ${fmtDate(b)}`;
+const offKind = (r) => r.paid ? "Paid time off" : "Unpaid day off";
+const offStatus = (r) => r.status === "approved" ? '<span class="badge ok">Approved</span>' : r.status === "denied" ? '<span class="badge bad">Denied</span>' : '<span class="badge warn">Waiting</span>';
+function workDays(a, b) { let n = 0; for (let d = new Date(a + "T12:00"); d <= new Date(b + "T12:00"); d.setDate(d.getDate() + 1)) if (d.getDay() % 6) n++; return n; }
+
+async function renderMyTimeOff(root) {
+  const { data } = await sb.from("time_off_requests").select("*").eq("user_id", state.profile.id).order("start_date", { ascending: false }).limit(20);
+  const list = data ?? [];
+  root.insertAdjacentHTML("afterbegin", `<div class="card stack" style="margin-bottom:12px" id="tocard">
+    <div class="row between"><h2 style="margin:0">🌴 Time off</h2>${RO() ? "" : '<button class="btn sm primary" id="reqoff">Request time off</button>'}</div>
+    ${list.length ? `<table><tr><th>Dates</th><th>Type</th><th>Status</th></tr>${list.map((r) => `<tr><td>${fmtRange(r.start_date, r.end_date)}${r.hours ? `<br><span class="small muted">${r.hours} hrs</span>` : ""}</td>
+      <td class="small">${offKind(r)}${r.reason ? `<br><span class="muted">${esc(r.reason)}</span>` : ""}${r.decision_note ? `<br><span class="muted">↳ ${esc(r.decision_note)}</span>` : ""}</td>
+      <td>${offStatus(r)}${r.status === "pending" && !RO() ? `<br><button class="btn sm" data-cancel="${r.id}" style="margin-top:4px">Cancel</button>` : ""}</td></tr>`).join("")}</table>`
+      : '<p class="small muted" style="margin:0">Need a day off? Send a request and Mitchell or Brittany will approve it.</p>'}
+  </div>`);
+  const card = root.querySelector("#tocard");
+  card.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = async () => {
+    if (!confirm("Cancel this time off request?")) return;
+    const { error } = await sb.from("time_off_requests").delete().eq("id", b.dataset.cancel);
+    if (error) return toast(error.message);
+    card.remove(); renderMyTimeOff(root);
+  }));
+  card.querySelector("#reqoff")?.addEventListener("click", () => timeOffForm(null, () => { card.remove(); renderMyTimeOff(root); }));
+}
+// Employees request their own; admins can also add time off for anyone (pre-approved).
+function timeOffForm(forUser, done) {
+  const admin = can("admin") && forUser !== null;
+  const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/guest/i.test(p.full_name ?? ""));
+  const t = today();
+  sheet(`<form class="stack" id="tof"><h2 style="margin:0">${admin ? "Add time off" : "Request time off"}</h2>
+    ${admin ? `<div><label>Who</label><select name="user_id">${people.map((p) => `<option value="${p.id}" ${p.id === forUser ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></div>` : ""}
+    <div class="grid2"><div><label>First day off</label><input type="date" name="start_date" required value="${t}"></div>
+      <div><label>Last day off</label><input type="date" name="end_date" required value="${t}"></div></div>
+    <div><label>Type</label><div class="seg" id="tkind"><button type="button" data-p="0" class="active">Unpaid day off</button><button type="button" data-p="1">Paid time off (PTO)</button></div></div>
+    <div><label>Partial day? Hours off (optional)</label><input name="hours" type="number" step="0.5" min="0" inputmode="decimal" placeholder="Leave blank for full days"></div>
+    <div><label>Reason (optional)</label><input name="reason" placeholder="e.g. Doctor appointment, family trip"></div>
+    <div class="row"><button class="btn primary">${admin ? "Add (approved)" : "Send request"}</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (r, close) => {
+    let paid = false;
+    r.querySelectorAll("#tkind [data-p]").forEach((b) => (b.onclick = () => { paid = b.dataset.p === "1"; r.querySelectorAll("#tkind [data-p]").forEach((x) => x.classList.toggle("active", x === b)); }));
+    const s = r.querySelector('[name="start_date"]'), e2 = r.querySelector('[name="end_date"]');
+    s.onchange = () => { if (e2.value < s.value) e2.value = s.value; };
+    r.querySelector("#tof").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = formData(e.target);
+      if (f.end_date < f.start_date) return toast("Last day is before the first day");
+      const row = { user_id: admin ? f.user_id : state.profile.id, start_date: f.start_date, end_date: f.end_date, paid, hours: f.hours ? Number(f.hours) : null, reason: f.reason || null };
+      if (admin) Object.assign(row, { status: "approved", decided_by: state.profile.id, decided_at: new Date().toISOString() });
+      const { error } = await sb.from("time_off_requests").insert(row);
+      if (error) return toast(error.message);
+      log("time_off_request", "time_off", null, { dates: fmtRange(row.start_date, row.end_date), paid });
+      toast(admin ? "Added to the calendar" : "Sent. You'll see it here when it's approved."); close(); done?.();
+    };
+  });
+}
+async function decideTimeOff(r, status, done) {
+  const note = status === "denied" ? prompt(`Deny ${nameOf(r.user_id).split(" ")[0]}'s request? Reason (they'll see it):`, "") : "";
+  if (note === null) return;
+  const { error } = await sb.from("time_off_requests").update({ status, decided_by: state.profile.id, decided_at: new Date().toISOString(), decision_note: note?.trim() || null }).eq("id", r.id);
+  if (error) return toast(error.message);
+  toast(status === "approved" ? "Approved" : "Denied"); done?.();
+}
+
+// Who's working: past days from time clock punches, plus approved/pending time off. Admin only.
+let calOffset = 0;
+async function renderWorkCalendar(el) {
+  await loadProfiles();
+  const base = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Denver" }));
+  const first = new Date(base.getFullYear(), base.getMonth() + calOffset, 1);
+  const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
+  const k = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const fromK = k(first), toK = k(last), todayK = today();
+  const [{ data: punches }, { data: offs }] = await Promise.all([
+    sb.from("time_entries").select("user_id, clock_in, clock_out").gte("clock_in", new Date(first.getTime() - 864e5).toISOString()).lte("clock_in", new Date(last.getTime() + 2 * 864e5).toISOString()),
+    sb.from("time_off_requests").select("*").lte("start_date", toK).gte("end_date", fromK).neq("status", "denied"),
+  ]);
+  const worked = {}; (punches ?? []).forEach((p) => { const d = dayKey(p.clock_in); ((worked[d] ??= {})[p.user_id] ??= 0); worked[d][p.user_id] += (p.clock_out ? new Date(p.clock_out) : new Date()) - new Date(p.clock_in); });
+  const offOn = (d) => (offs ?? []).filter((r) => r.start_date <= d && r.end_date >= d);
+  const first3 = (id) => esc((nameOf(id) || "?").split(" ")[0]);
+  const pending = (offs ?? []).filter((r) => r.status === "pending");
+  const cells = [];
+  for (let i = 0; i < first.getDay(); i++) cells.push('<div class="cal-cell empty"></div>');
+  for (let d = 1; d <= last.getDate(); d++) {
+    const dk = k(new Date(first.getFullYear(), first.getMonth(), d));
+    const w = Object.keys(worked[dk] ?? {}), o = offOn(dk);
+    cells.push(`<div class="cal-cell ${dk === todayK ? "today" : ""}" data-day="${dk}"><div class="cal-d">${d}</div>
+      ${w.length ? `<div class="cal-w">👷 ${w.length}</div>` : ""}
+      ${o.map((r) => `<div class="cal-off ${r.status === "pending" ? "pend" : r.paid ? "pto" : "unp"}">${first3(r.user_id)}</div>`).join("")}</div>`);
+  }
+  el.innerHTML = `<div class="card stack" id="wcal">
+    <div class="row between"><h2 style="margin:0">📅 Who's working</h2><button class="btn sm" id="addoff">+ Time off</button></div>
+    ${pending.length ? `<div class="stack" style="gap:6px">${pending.map((r) => `<div class="item" style="cursor:default"><div class="row between"><span class="title">${esc(nameOf(r.user_id))} · ${fmtRange(r.start_date, r.end_date)}</span><span class="badge warn">Waiting</span></div>
+      <div class="small">${offKind(r)}${r.hours ? ` · ${r.hours} hrs` : ` · ${workDays(r.start_date, r.end_date)} workday${workDays(r.start_date, r.end_date) === 1 ? "" : "s"}`}${r.reason ? ` · ${esc(r.reason)}` : ""}</div>
+      <div class="row" style="gap:6px;margin-top:6px"><button class="btn sm primary" data-appr="${r.id}">Approve</button><button class="btn sm" data-deny="${r.id}">Deny</button></div></div>`).join("")}</div>` : ""}
+    <div class="row between"><button class="btn sm" id="calprev">‹</button><strong>${first.toLocaleDateString([], { month: "long", year: "numeric" })}</strong><button class="btn sm" id="calnext">›</button></div>
+    <div class="cal-grid">${["S", "M", "T", "W", "T", "F", "S"].map((x) => `<div class="cal-h">${x}</div>`).join("")}${cells.join("")}</div>
+    <div class="row wrap small" style="gap:10px"><span>👷 worked (time clock)</span><span><span class="cal-off pto">Name</span> paid off</span><span><span class="cal-off unp">Name</span> unpaid off</span><span><span class="cal-off pend">Name</span> requested</span></div>
+  </div>`;
+  const again = () => renderWorkCalendar(el);
+  el.querySelector("#calprev").onclick = () => { calOffset--; again(); };
+  el.querySelector("#calnext").onclick = () => { calOffset++; again(); };
+  el.querySelector("#addoff").onclick = () => timeOffForm(undefined, again);
+  el.querySelectorAll("[data-appr]").forEach((b) => (b.onclick = () => decideTimeOff(pending.find((r) => r.id === b.dataset.appr), "approved", again)));
+  el.querySelectorAll("[data-deny]").forEach((b) => (b.onclick = () => decideTimeOff(pending.find((r) => r.id === b.dataset.deny), "denied", again)));
+  el.querySelectorAll("[data-day]").forEach((c) => (c.onclick = () => {
+    const dk = c.dataset.day, w = worked[dk] ?? {}, o = offOn(dk);
+    const guys = (state.cache.profiles ?? []).filter(isGuy);
+    const notIn = dk < todayK ? guys.filter((p) => !w[p.id] && !o.some((r) => r.user_id === p.id)) : [];
+    sheet(`<div class="stack"><div class="row between"><h2 style="margin:0">${new Date(dk + "T12:00").toLocaleDateString([], { weekday: "long", month: "long", day: "numeric" })}</h2><button class="btn sm" data-close>Close</button></div>
+      <div><h3 style="margin:0 0 4px">Worked</h3>${Object.entries(w).map(([id, ms]) => `<div class="row between"><span>${esc(nameOf(id) || "Unknown")}</span><span class="small muted">${hm(ms)}</span></div>`).join("") || `<p class="small muted" style="margin:0">${dk > todayK ? "Future day." : "No time clock punches."}</p>`}</div>
+      <div><h3 style="margin:0 0 4px">Off</h3>${o.map((r) => `<div class="item" style="cursor:default"><div class="row between"><span>${esc(nameOf(r.user_id))}</span>${r.status === "pending" ? '<span class="badge warn">Requested</span>' : r.paid ? '<span class="badge ok">Paid</span>' : '<span class="badge">Unpaid</span>'}</div>
+        <div class="small muted">${fmtRange(r.start_date, r.end_date)}${r.hours ? ` · ${r.hours} hrs` : ""}${r.reason ? ` · ${esc(r.reason)}` : ""}</div>
+        <div class="row" style="gap:6px;margin-top:6px">${r.status === "pending" ? `<button class="btn sm primary" data-ok="${r.id}">Approve</button><button class="btn sm" data-no="${r.id}">Deny</button>` : ""}<button class="btn sm" data-flip="${r.id}">Make ${r.paid ? "unpaid" : "paid"}</button><button class="btn sm danger" data-rm="${r.id}">Remove</button></div></div>`).join("") || '<p class="small muted" style="margin:0">Nobody off.</p>'}</div>
+      ${notIn.length ? `<div><h3 style="margin:0 0 4px">No punches</h3><p class="small muted" style="margin:0">${notIn.map((p) => esc(p.full_name)).join(", ")}</p></div>` : ""}
+    </div>`, (r, close) => {
+      const fin = () => { close(); again(); };
+      r.querySelectorAll("[data-ok]").forEach((b) => (b.onclick = () => decideTimeOff(o.find((x) => x.id === b.dataset.ok), "approved", fin)));
+      r.querySelectorAll("[data-no]").forEach((b) => (b.onclick = () => decideTimeOff(o.find((x) => x.id === b.dataset.no), "denied", fin)));
+      r.querySelectorAll("[data-flip]").forEach((b) => (b.onclick = async () => { const x = o.find((y) => y.id === b.dataset.flip); const { error } = await sb.from("time_off_requests").update({ paid: !x.paid }).eq("id", x.id); if (error) return toast(error.message); fin(); }));
+      r.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = async () => { if (!confirm("Remove this time off?")) return; const { error } = await sb.from("time_off_requests").delete().eq("id", b.dataset.rm); if (error) return toast(error.message); fin(); }));
+    });
+  }));
+}
+
+// ---------------------------------------------------------------- Employee handbook
+async function renderHandbook(root) {
+  const { data: hb } = await sb.from("handbook").select("*").maybeSingle();
+  root.innerHTML = `<div class="card stack">
+    <div class="row between"><h2 style="margin:0">📘 Employee handbook</h2>${isOwner() ? `<label class="btn sm primary" style="cursor:pointer">${hb ? "Replace" : "Upload"}<input type="file" id="hbfile" accept=".pdf,.doc,.docx,application/pdf" hidden></label>` : ""}</div>
+    ${hb ? `<p class="small muted" style="margin:0">${esc(hb.file_name)} · updated ${fmtDate(hb.uploaded_at.slice(0, 10))}</p>
+      <div class="row wrap"><button class="btn primary" id="hbopen">Open handbook</button></div>
+      <div id="hbview"></div>` : `<p class="small muted" style="margin:0">${isOwner() ? "Upload the handbook (PDF works best) and everyone will see it here." : "The handbook hasn't been posted yet."}</p>`}
+  </div>`;
+  if (hb) {
+    const { data: s } = await sb.storage.from("handbook").createSignedUrl(hb.path, 3600);
+    const url = s?.signedUrl;
+    root.querySelector("#hbopen").onclick = () => url ? window.open(url, "_blank", "noopener") : toast("Couldn't open the file");
+    if (url && /\.pdf$/i.test(hb.path) && matchMedia("(min-width: 700px)").matches) root.querySelector("#hbview").innerHTML = `<iframe src="${url}" title="Employee handbook" style="width:100%;height:75vh;border:1px solid var(--line);border-radius:12px;background:#fff"></iframe>`;
+  }
+  root.querySelector("#hbfile")?.addEventListener("change", async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    const path = `handbook-${Date.now()}.${(f.name.split(".").pop() || "pdf").toLowerCase()}`;
+    toast("Uploading…");
+    const up = await sb.storage.from("handbook").upload(path, f, { contentType: f.type || "application/pdf", upsert: true });
+    if (up.error) return toast(up.error.message);
+    const { error } = await sb.from("handbook").upsert({ id: 1, path, file_name: f.name, uploaded_by: state.profile.id, uploaded_at: new Date().toISOString() });
+    if (error) return toast(error.message);
+    if (hb?.path && hb.path !== path) sb.storage.from("handbook").remove([hb.path]);
+    log("handbook_upload", "handbook", null, { file: f.name });
+    toast("Handbook posted"); renderHandbook(root);
   });
 }
 
@@ -3495,7 +3658,7 @@ async function renderTimeclockAdmin(root) {
   const open = sq?.ok ? sq.on.map((o) => ({ user_id: o.user_id, clock_in: o.clock_in, name: o.user_id ? nameOf(o.user_id) : "Someone without a hub login" }))
                       : ((await sb.from("time_entries").select("*").is("clock_out", null)).data ?? []);
   const issues = (week ?? []).filter((e) => e.square_status === "error");
-  root.innerHTML = `
+  root.innerHTML = `<div id="wcalwrap" style="margin-bottom:12px"></div>
     <div class="card stack"><div class="row between"><h2 style="margin:0">On the clock now</h2><span class="badge ${open?.length ? "ok" : ""}">${open?.length ?? 0}</span></div>
       ${(open ?? []).map((e) => `<div class="row between"><span>${esc(e.name ?? nameOf(e.user_id))}</span><span class="small muted">since ${timeOf(e.clock_in)} · ${hm(entryMs(e))}</span></div>`).join("") || '<p class="small muted" style="margin:0">Nobody is clocked in.</p>'}
     </div>
@@ -3503,6 +3666,7 @@ async function renderTimeclockAdmin(root) {
       <table><tr><th>Person</th><th>Hours</th></tr>${Object.entries(byUser).sort((a, b) => b[1] - a[1]).map(([id, ms]) => `<tr><td>${esc(nameOf(id))}</td><td>${hm(ms)}</td></tr>`).join("") || '<tr><td colspan="2" class="muted">No punches yet this week.</td></tr>'}</table>
       ${issues.length ? `<p class="small error">${issues.length} punch${issues.length > 1 ? "es" : ""} didn't reach Square: ${issues.map((e) => esc(nameOf(e.user_id)) + " " + new Date(e.clock_in).toLocaleDateString([], { month: "short", day: "numeric" })).join(", ")}. Fix those in Square Team.</p>` : ""}
     </div>`;
+  await renderWorkCalendar(root.querySelector("#wcalwrap"));
   await renderExtraPay(root);
   const { data: x } = await sb.from("extra_time_entries").select("*").gte("clock_in", weekStart(-1).toISOString()).order("clock_in", { ascending: false });
   if (!(x ?? []).length) return;

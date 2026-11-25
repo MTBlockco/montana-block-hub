@@ -356,3 +356,15 @@ html.forest .todos { border-left: 3px solid var(--forest); }
 .readonly .todo-chk { pointer-events: none; }
 .calc-out { margin-top: 12px; padding: 12px; border-radius: 12px; background: var(--surface-2); min-height: 24px; }
 .calc-big { font-family: Oswald, Inter, sans-serif; font-size: 1.5rem; color: var(--accent); }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; }
+.cal-h { text-align: center; font-size: .72rem; color: var(--muted); font-weight: 600; }
+.cal-cell { min-height: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 3px; cursor: pointer; overflow: hidden; background: var(--surface); }
+.cal-cell.empty { border: 0; background: none; cursor: default; }
+.cal-cell.today { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.cal-d { font-size: .75rem; font-weight: 700; }
+.cal-w { font-size: .68rem; color: var(--muted); }
+.cal-off { display: block; font-size: .64rem; line-height: 1.25; border-radius: 4px; padding: 0 3px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+span.cal-off { display: inline-block; }
+.cal-off.pto { background: #2f7a46; color: #fff; }
+.cal-off.unp { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
+.cal-off.pend { background: transparent; color: #d9a440; border: 1px dashed #d9a440; }
