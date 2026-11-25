@@ -380,6 +380,7 @@ async function renderHome(root) {
     ${OFFICE || RO() ? "" : `<div class="card accent clock" id="clock"><div class="muted small">Loading time clock…</div></div>
     <div id="mytimer" class="section"></div>`}
     <div id="todos" class="section"></div>
+    <div id="msgs" class="section"></div>
     <div id="reqalert"></div>
     ${state.profile.extra_clock && !OFFICE ? '<div class="card clock section" id="xclock"><div class="muted small">Loading extra hours…</div></div>' : ""}
     <div class="stack section">
@@ -402,6 +403,7 @@ async function renderHome(root) {
   wireTopbar(root);
   if (!OFFICE && !RO()) renderClock(root.querySelector("#clock"));
   renderTodos(root.querySelector("#todos"));
+  renderMessages(root.querySelector("#msgs"));
   if (state.profile.extra_clock && !OFFICE) renderExtraClock(root.querySelector("#xclock"));
   root.querySelector("#addAnn")?.addEventListener("click", () => editAnnouncement());
   root.querySelectorAll("[data-edit-ann]").forEach((b) => (b.onclick = () => editAnnouncement((ann.data ?? []).find((a) => a.id === b.dataset.editAnn))));
@@ -498,6 +500,110 @@ function editTodo(t, done) {
       if (error) return toast(error.message);
       close(); done?.();
     });
+  });
+}
+
+// ---------------------------------------------------------------- Messages (Home)
+// Mitchell & Brittany (admin+) message the guys. Each employee has one thread with the office; both admins see every thread.
+const isGuy = (p) => p.active && (p.role === "shop" || p.role === "lead") && !/guest/i.test(p.full_name ?? "");
+const msgTime = (d) => new Date(d).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+let msgPoll = null;
+async function renderMessages(el) {
+  if (!el || RO()) return;
+  await loadProfiles();
+  const office = can("admin"), me = state.profile.id;
+  const { data } = await sb.from("messages").select("*").order("created_at", { ascending: false }).limit(500);
+  const all = data ?? [];
+  const unreadFor = (m) => office ? (!m.read_by_office_at && m.sender_id === m.employee_id) : (!m.read_by_employee_at && m.sender_id !== me);
+  if (office) {
+    const guys = (state.cache.profiles ?? []).filter(isGuy);
+    const threads = guys.map((p) => { const ms = all.filter((m) => m.employee_id === p.id); return { p, last: ms[0], unread: ms.filter(unreadFor).length }; })
+      .sort((a, b) => (b.unread - a.unread) || (new Date(b.last?.created_at ?? 0) - new Date(a.last?.created_at ?? 0)));
+    const active = threads.filter((t) => t.last);
+    const unread = active.reduce((s, t) => s + t.unread, 0);
+    el.innerHTML = `<div class="card">
+      <div class="row between"><h2 style="margin:0">💬 Messages ${unread ? `<span class="badge warn">${unread} new</span>` : ""}</h2><button class="btn sm primary" id="newmsg">+ Message</button></div>
+      ${active.length ? `<div class="list" style="margin-top:8px">${active.slice(0, 8).map((t) => `<div class="item" data-thread="${t.p.id}"><div class="row between"><span class="title">${esc(t.p.full_name)}</span>${t.unread ? `<span class="badge warn">${t.unread}</span>` : `<span class="small muted">${msgTime(t.last.created_at)}</span>`}</div>
+        <div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${t.last.sender_id === t.p.id ? "" : "You: "}${esc(t.last.body)}</div></div>`).join("")}</div>` : '<p class="small muted" style="margin:8px 0 0">No messages yet. Tap + Message to ask the guys something.</p>'}
+    </div>`;
+    el.querySelector("#newmsg").onclick = () => newMessage(guys, () => renderMessages(el));
+    el.querySelectorAll("[data-thread]").forEach((d) => (d.onclick = () => openThread(d.dataset.thread, () => renderMessages(el))));
+  } else {
+    const unread = all.filter(unreadFor).length, last = all[0];
+    el.innerHTML = `<div class="card" id="mythread" style="cursor:pointer">
+      <div class="row between"><h2 style="margin:0">💬 Messages ${unread ? `<span class="badge warn">${unread} new</span>` : ""}</h2><span class="small muted">Mitchell &amp; Brittany</span></div>
+      <div class="small ${unread ? "" : "muted"}" style="margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${last ? `${last.sender_id === me ? "You" : esc((nameOf(last.sender_id) || "Office").split(" ")[0])}: ${esc(last.body)}` : "No messages yet. Tap to send one."}</div>
+    </div>`;
+    el.querySelector("#mythread").onclick = () => openThread(me, () => renderMessages(el));
+  }
+  clearInterval(msgPoll);
+  msgPoll = setInterval(() => { if (!document.body.contains(el)) return clearInterval(msgPoll); if (!document.querySelector(".sheet-bg") && !document.hidden) renderMessages(el); }, 60000);
+}
+function openThread(empId, done) {
+  const office = can("admin"), me = state.profile.id;
+  const title = office ? nameOf(empId) : "Mitchell & Brittany";
+  let timer = null, lastCount = -1;
+  const close = sheet(`<div class="stack" style="min-height:60vh">
+    <div class="row between"><h2 style="margin:0">${esc(title)}</h2><button class="btn sm" data-close>Close</button></div>
+    <div class="chat" id="thr" style="max-height:55vh;overflow:auto;padding:4px 2px"><p class="small muted">Loading…</p></div>
+    <form class="row" id="sendf" style="gap:8px"><textarea name="body" rows="2" placeholder="Type a message…" style="flex:1;min-height:44px" required></textarea><button class="btn primary">Send</button></form>
+  </div>`, (root) => {
+    const thr = root.querySelector("#thr");
+    const load = async () => {
+      const { data } = await sb.from("messages").select("*").eq("employee_id", empId).order("created_at", { ascending: true }).limit(300);
+      const ms = data ?? [];
+      if (ms.length !== lastCount) {
+        lastCount = ms.length;
+        thr.innerHTML = ms.length ? ms.map((m) => {
+          const mine = office ? m.sender_id !== empId : m.sender_id === me;
+          const who = mine ? (m.sender_id === me ? "" : (nameOf(m.sender_id) || "").split(" ")[0]) : (nameOf(m.sender_id) || "").split(" ")[0];
+          return `<div class="bubble ${mine ? "me" : "ai"}">${esc(m.body)}<div class="small" style="opacity:.7;margin-top:4px">${who ? esc(who) + " · " : ""}${msgTime(m.created_at)}${mine && (office ? m.read_by_employee_at : m.read_by_office_at) ? " · Seen" : ""}</div></div>`;
+        }).join("") : '<p class="small muted">No messages yet.</p>';
+        thr.scrollTop = thr.scrollHeight;
+      }
+      const now = new Date().toISOString();
+      if (office) { if (ms.some((m) => m.sender_id === empId && !m.read_by_office_at)) await sb.from("messages").update({ read_by_office_at: now }).eq("employee_id", empId).eq("sender_id", empId).is("read_by_office_at", null); }
+      else if (ms.some((m) => m.sender_id !== me && !m.read_by_employee_at)) await sb.from("messages").update({ read_by_employee_at: now }).eq("employee_id", empId).neq("sender_id", me).is("read_by_employee_at", null);
+    };
+    load(); timer = setInterval(load, 15000);
+    const watch = setInterval(() => { if (!document.body.contains(root)) { clearInterval(watch); clearInterval(timer); done?.(); } }, 400);
+    const ta = root.querySelector("textarea");
+    ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer:fine)").matches) { e.preventDefault(); root.querySelector("#sendf").requestSubmit(); } });
+    root.querySelector("#sendf").onsubmit = async (e) => {
+      e.preventDefault();
+      const body = ta.value.trim(); if (!body) return;
+      ta.value = ""; const b = e.target.querySelector("button"); b.disabled = true;
+      const { error } = await sb.from("messages").insert({ employee_id: empId, sender_id: me, body });
+      b.disabled = false;
+      if (error) { ta.value = body; return toast(error.message); }
+      lastCount = -1; load();
+    };
+  });
+  return close;
+}
+function newMessage(guys, done) {
+  sheet(`<form class="stack" id="nmf">
+    <h2 style="margin:0">New message</h2>
+    <div><label>To</label>
+      <label class="row" style="color:var(--text);font-weight:600"><input type="checkbox" id="allg" style="width:auto;min-height:0"> Everyone</label>
+      <div class="stack" style="gap:4px;margin-top:4px">${guys.map((p) => `<label class="row" style="color:var(--text);font-weight:400"><input type="checkbox" name="to" value="${p.id}" style="width:auto;min-height:0"> ${esc(p.full_name)}</label>`).join("")}</div></div>
+    <div><label>Message</label><textarea name="body" required style="min-height:90px" placeholder="e.g. How many 16&quot; rails are glued up?"></textarea></div>
+    <p class="small muted" style="margin:0">Each person gets it in their own thread with you and Brittany, so their answers stay private.</p>
+    <div class="row"><button class="btn primary">Send</button><button type="button" class="btn" data-close>Cancel</button></div>
+  </form>`, (root, close) => {
+    const boxes = [...root.querySelectorAll('[name="to"]')];
+    root.querySelector("#allg").onchange = (e) => boxes.forEach((b) => (b.checked = e.target.checked));
+    root.querySelector("#nmf").onsubmit = async (e) => {
+      e.preventDefault();
+      const to = boxes.filter((b) => b.checked).map((b) => b.value);
+      const body = root.querySelector('[name="body"]').value.trim();
+      if (!to.length) return toast("Pick who it's for");
+      if (!body) return;
+      const { error } = await sb.from("messages").insert(to.map((id) => ({ employee_id: id, sender_id: state.profile.id, body })));
+      if (error) return toast(error.message);
+      log("message_send", "message", null, { to: to.length });
+      toast(to.length > 1 ? `Sent to ${to.length} people` : `Sent to ${nameOf(to[0]).split(" ")[0]}`); close(); done?.();
+    };
   });
 }
 
