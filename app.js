@@ -3384,12 +3384,25 @@ const fmtRange = (a, b) => a === b ? fmtDate(a) : `${fmtDate(a)} – ${fmtDate(b
 const offKind = (r) => r.paid ? "Paid time off" : "Unpaid day off";
 const offStatus = (r) => r.status === "approved" ? '<span class="badge ok">Approved</span>' : r.status === "denied" ? '<span class="badge bad">Denied</span>' : '<span class="badge warn">Waiting</span>';
 function workDays(a, b) { let n = 0; for (let d = new Date(a + "T12:00"); d <= new Date(b + "T12:00"); d.setDate(d.getDate() + 1)) if (d.getDay() % 6) n++; return n; }
+// PTO: everyone starts each calendar year with one week (5 workdays = 40 hrs). Approved paid time off counts against it.
+const PTO_DAYS_PER_YEAR = 5, PTO_HRS_PER_DAY = 8;
+const offDays = (r) => r.hours ? Number(r.hours) / PTO_HRS_PER_DAY : workDays(r.start_date, r.end_date);
+function ptoSummary(list, userId, year = Number(today().slice(0, 4))) {
+  const mine = (list ?? []).filter((r) => r.user_id === userId && r.paid && r.start_date.slice(0, 4) === String(year));
+  const used = mine.filter((r) => r.status === "approved").reduce((a, r) => a + offDays(r), 0);
+  const pending = mine.filter((r) => r.status === "pending").reduce((a, r) => a + offDays(r), 0);
+  return { year, total: PTO_DAYS_PER_YEAR, used, pending, left: PTO_DAYS_PER_YEAR - used };
+}
+const dayFmt = (d) => `${Math.round(d * 100) / 100} day${Math.abs(d) === 1 ? "" : "s"}`;
 
 async function renderMyTimeOff(root) {
-  const { data } = await sb.from("time_off_requests").select("*").eq("user_id", state.profile.id).order("start_date", { ascending: false }).limit(20);
+  const { data } = await sb.from("time_off_requests").select("*").eq("user_id", state.profile.id).order("start_date", { ascending: false }).limit(60);
   const list = data ?? [];
+  const pto = ptoSummary(list, state.profile.id);
   root.insertAdjacentHTML("afterbegin", `<div class="card stack" style="margin-bottom:12px" id="tocard">
     <div class="row between"><h2 style="margin:0">🌴 Time off</h2>${RO() ? "" : '<button class="btn sm primary" id="reqoff">Request time off</button>'}</div>
+    <div class="card" style="padding:12px;margin:0"><div class="row between"><strong>PTO left for ${pto.year}</strong><span style="font-family:var(--display);font-size:1.6rem">${dayFmt(pto.left)}</span></div>
+      <div class="small muted">${pto.total} days (1 week) a year · used ${dayFmt(pto.used)}${pto.pending ? ` · ${dayFmt(pto.pending)} waiting for approval` : ""} · resets Jan 1</div></div>
     ${list.length ? `<table><tr><th>Dates</th><th>Type</th><th>Status</th></tr>${list.map((r) => `<tr><td>${fmtRange(r.start_date, r.end_date)}${r.hours ? `<br><span class="small muted">${r.hours} hrs</span>` : ""}</td>
       <td class="small">${offKind(r)}${r.reason ? `<br><span class="muted">${esc(r.reason)}</span>` : ""}${r.decision_note ? `<br><span class="muted">↳ ${esc(r.decision_note)}</span>` : ""}</td>
       <td>${offStatus(r)}${r.status === "pending" && !RO() ? `<br><button class="btn sm" data-cancel="${r.id}" style="margin-top:4px">Cancel</button>` : ""}</td></tr>`).join("")}</table>`
@@ -3402,10 +3415,10 @@ async function renderMyTimeOff(root) {
     if (error) return toast(error.message);
     card.remove(); renderMyTimeOff(root);
   }));
-  card.querySelector("#reqoff")?.addEventListener("click", () => timeOffForm(null, () => { card.remove(); renderMyTimeOff(root); }));
+  card.querySelector("#reqoff")?.addEventListener("click", () => timeOffForm(null, () => { card.remove(); renderMyTimeOff(root); }, pto));
 }
 // Employees request their own; admins can also add time off for anyone (pre-approved).
-function timeOffForm(forUser, done) {
+function timeOffForm(forUser, done, pto) {
   const admin = can("admin") && forUser !== null;
   const people = (state.cache.profiles ?? []).filter((p) => p.active && p.role !== "pending" && !/guest/i.test(p.full_name ?? ""));
   const t = today();
@@ -3413,7 +3426,8 @@ function timeOffForm(forUser, done) {
     ${admin ? `<div><label>Who</label><select name="user_id">${people.map((p) => `<option value="${p.id}" ${p.id === forUser ? "selected" : ""}>${esc(p.full_name)}</option>`).join("")}</select></div>` : ""}
     <div class="grid2"><div><label>First day off</label><input type="date" name="start_date" required value="${t}"></div>
       <div><label>Last day off</label><input type="date" name="end_date" required value="${t}"></div></div>
-    <div><label>Type</label><div class="seg" id="tkind"><button type="button" data-p="0" class="active">Unpaid day off</button><button type="button" data-p="1">Paid time off (PTO)</button></div></div>
+    <div><label>Type</label><div class="seg" id="tkind"><button type="button" data-p="0" class="active">Unpaid day off</button><button type="button" data-p="1">Paid time off (PTO)</button></div>
+      ${pto ? `<p class="small muted" style="margin:6px 0 0" id="ptonote">You have ${dayFmt(pto.left - pto.pending)} of PTO left this year${pto.pending ? " (counting requests still waiting)" : ""}.</p>` : ""}</div>
     <div><label>Partial day? Hours off (optional)</label><input name="hours" type="number" step="0.5" min="0" inputmode="decimal" placeholder="Leave blank for full days"></div>
     <div><label>Reason (optional)</label><input name="reason" placeholder="e.g. Doctor appointment, family trip"></div>
     <div class="row"><button class="btn primary">${admin ? "Add (approved)" : "Send request"}</button><button type="button" class="btn" data-close>Cancel</button></div>
@@ -3426,6 +3440,10 @@ function timeOffForm(forUser, done) {
       e.preventDefault();
       const f = formData(e.target);
       if (f.end_date < f.start_date) return toast("Last day is before the first day");
+      if (paid && pto && f.start_date.slice(0, 4) === String(pto.year)) {
+        const want = f.hours ? Number(f.hours) / PTO_HRS_PER_DAY : workDays(f.start_date, f.end_date);
+        if (want > pto.left - pto.pending && !confirm(`That's ${dayFmt(want)} of PTO, but you only have ${dayFmt(Math.max(0, pto.left - pto.pending))} left. Send the request anyway?`)) return;
+      }
       const row = { user_id: admin ? f.user_id : state.profile.id, start_date: f.start_date, end_date: f.end_date, paid, hours: f.hours ? Number(f.hours) : null, reason: f.reason || null };
       if (admin) Object.assign(row, { status: "approved", decided_by: state.profile.id, decided_at: new Date().toISOString() });
       const { error } = await sb.from("time_off_requests").insert(row);
@@ -3452,10 +3470,13 @@ async function renderWorkCalendar(el) {
   const last = new Date(first.getFullYear(), first.getMonth() + 1, 0);
   const k = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   const fromK = k(first), toK = k(last), todayK = today();
-  const [{ data: punches }, { data: offs }] = await Promise.all([
+  const yr = today().slice(0, 4);
+  const [{ data: punches }, { data: offs }, { data: ptoAll }] = await Promise.all([
     sb.from("time_entries").select("user_id, clock_in, clock_out").gte("clock_in", new Date(first.getTime() - 864e5).toISOString()).lte("clock_in", new Date(last.getTime() + 2 * 864e5).toISOString()),
     sb.from("time_off_requests").select("*").lte("start_date", toK).gte("end_date", fromK).neq("status", "denied"),
+    sb.from("time_off_requests").select("*").eq("paid", true).gte("start_date", `${yr}-01-01`).lte("start_date", `${yr}-12-31`).neq("status", "denied"),
   ]);
+  const ptoRows = (state.cache.profiles ?? []).filter(isGuy).map((p) => ({ p, s: ptoSummary(ptoAll, p.id) }));
   const worked = {}; (punches ?? []).forEach((p) => { const d = dayKey(p.clock_in); ((worked[d] ??= {})[p.user_id] ??= 0); worked[d][p.user_id] += (p.clock_out ? new Date(p.clock_out) : new Date()) - new Date(p.clock_in); });
   const offOn = (d) => (offs ?? []).filter((r) => r.start_date <= d && r.end_date >= d);
   const first3 = (id) => esc((nameOf(id) || "?").split(" ")[0]);
@@ -3473,10 +3494,13 @@ async function renderWorkCalendar(el) {
     <div class="row between"><h2 style="margin:0">📅 Who's working</h2><button class="btn sm" id="addoff">+ Time off</button></div>
     ${pending.length ? `<div class="stack" style="gap:6px">${pending.map((r) => `<div class="item" style="cursor:default"><div class="row between"><span class="title">${esc(nameOf(r.user_id))} · ${fmtRange(r.start_date, r.end_date)}</span><span class="badge warn">Waiting</span></div>
       <div class="small">${offKind(r)}${r.hours ? ` · ${r.hours} hrs` : ` · ${workDays(r.start_date, r.end_date)} workday${workDays(r.start_date, r.end_date) === 1 ? "" : "s"}`}${r.reason ? ` · ${esc(r.reason)}` : ""}</div>
+      ${r.paid ? (() => { const s = ptoSummary(ptoAll, r.user_id); const after = s.left - offDays(r); return `<div class="small ${after < 0 ? "error" : "muted"}">PTO: ${dayFmt(s.left)} left now → ${dayFmt(after)} if approved</div>`; })() : ""}
       <div class="row" style="gap:6px;margin-top:6px"><button class="btn sm primary" data-appr="${r.id}">Approve</button><button class="btn sm" data-deny="${r.id}">Deny</button></div></div>`).join("")}</div>` : ""}
     <div class="row between"><button class="btn sm" id="calprev">‹</button><strong>${first.toLocaleDateString([], { month: "long", year: "numeric" })}</strong><button class="btn sm" id="calnext">›</button></div>
     <div class="cal-grid">${["S", "M", "T", "W", "T", "F", "S"].map((x) => `<div class="cal-h">${x}</div>`).join("")}${cells.join("")}</div>
     <div class="row wrap small" style="gap:10px"><span>👷 worked (time clock)</span><span><span class="cal-off pto">Name</span> paid off</span><span><span class="cal-off unp">Name</span> unpaid off</span><span><span class="cal-off pend">Name</span> requested</span></div>
+    <details><summary class="small"><strong>PTO balances ${yr}</strong> · ${PTO_DAYS_PER_YEAR} days (1 week) each, resets Jan 1</summary>
+      <table style="margin-top:6px"><tr><th>Person</th><th>Used</th><th>Waiting</th><th>Left</th></tr>${ptoRows.map(({ p, s }) => `<tr><td>${esc(p.full_name)}</td><td>${dayFmt(s.used)}</td><td>${s.pending ? dayFmt(s.pending) : "—"}</td><td><strong class="${s.left < 0 ? "error" : ""}">${dayFmt(s.left)}</strong></td></tr>`).join("")}</table></details>
   </div>`;
   const again = () => renderWorkCalendar(el);
   el.querySelector("#calprev").onclick = () => { calOffset--; again(); };
