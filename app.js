@@ -3111,7 +3111,7 @@ function renderCalcs(el) {
   el.innerHTML = `
     <div class="card">
       <h3 style="margin-top:0">Board Foot Calculator</h3>
-      <div class="chips" style="flex-wrap:wrap;margin-bottom:8px">${["4/4", "5/4", "6/4", "8/4", "10/4", "12/4", "16/4"].map((q) => `<button type="button" class="chip" data-q="${q}">${q}</button>`).join("")}</div>
+      <div class="chips" style="flex-wrap:wrap;margin-bottom:8px">${["4/4", "5/4", "6/4", "8/4"].map((q) => `<button type="button" class="chip" data-q="${q}">${q}</button>`).join("")}</div>
       <div class="grid2">
         <div><label>Thickness (in)</label><input id="bt" inputmode="decimal" placeholder='e.g. 1 3/4 or 8/4' value="1"></div>
         <div><label>Width (in)</label><input id="bw" inputmode="decimal" placeholder="e.g. 6 1/2"></div>
