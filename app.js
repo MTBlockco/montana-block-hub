@@ -3109,8 +3109,8 @@ const EPOXY_RATES = [
 
 function renderCalcs(el) {
   el.innerHTML = `
-    <div class="card">
-      <h3 style="margin-top:0">Board Foot Calculator</h3>
+    <div class="card calc-card">
+      <h3 class="calc-title">Board Foot Calculator</h3>
       <div class="chips" style="flex-wrap:wrap;margin-bottom:8px">${["4/4", "5/4", "6/4", "8/4"].map((q) => `<button type="button" class="chip" data-q="${q}">${q}</button>`).join("")}</div>
       <div class="grid2">
         <div><label>Thickness (in)</label><input id="bt" inputmode="decimal" placeholder='e.g. 1 3/4 or 8/4' value="1"></div>
@@ -3121,8 +3121,8 @@ function renderCalcs(el) {
       <div id="bfout" class="calc-out"></div>
       <p class="small muted" style="margin-bottom:0">Board feet = thickness × width × length (in) ÷ 144. Quarters: 4/4 = 1", 8/4 = 2".</p>
     </div>
-    <div class="card">
-      <h3 style="margin-top:0">MM ⇄ Inch Converter</h3>
+    <div class="card calc-card">
+      <h3 class="calc-title">MM ⇄ Inch Converter</h3>
       <div class="grid2">
         <div><label>Millimeters</label><input id="mm" inputmode="decimal" placeholder="e.g. 19"></div>
         <div><label>Inches (decimal or fraction)</label><input id="inch" inputmode="decimal" placeholder='e.g. 3/4 or 1.5'></div>
@@ -3130,8 +3130,8 @@ function renderCalcs(el) {
       <div id="mmout" class="calc-out"></div>
       <p class="small muted" style="margin-bottom:0">Fractions are rounded to the nearest 1/32".</p>
     </div>
-    <div class="card">
-      <h3 style="margin-top:0">Epoxy Calculator</h3>
+    <div class="card calc-card">
+      <h3 class="calc-title">Epoxy Calculator</h3>
       <div class="grid2">${EPOXY_RATES.map((r, i) => `<div><label>${r.label} <span class="muted" style="font-weight:400">(${r.oz} oz ${r.per})</span></label><input data-ep="${i}" inputmode="numeric" placeholder="0"></div>`).join("")}</div>
       <div id="epout" class="calc-out"></div>
       <p class="small muted" style="margin-bottom:0">Total mixed epoxy, from the shop's whiteboard amounts.</p>

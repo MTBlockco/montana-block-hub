@@ -368,3 +368,6 @@ span.cal-off { display: inline-block; }
 .cal-off.pto { background: #2f7a46; color: #fff; }
 .cal-off.unp { background: var(--surface-2); color: var(--text); border: 1px solid var(--line); }
 .cal-off.pend { background: transparent; color: #d9a440; border: 1px dashed #d9a440; }
+.calc-card { margin-bottom: 28px; padding-top: 18px; border-width: 2px; }
+.calc-card + .calc-card { margin-top: 28px; }
+.calc-title { text-align: center; font-family: Oswald, Inter, sans-serif; font-size: 1.6rem; letter-spacing: .04em; margin: 0 0 14px; padding-bottom: 10px; border-bottom: 2px solid var(--line); }
