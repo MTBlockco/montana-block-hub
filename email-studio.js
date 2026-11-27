@@ -89,6 +89,7 @@ function wireOpen(el) { el.querySelectorAll("[data-open]").forEach((b) => (b.onc
 
 async function loadCampaigns(kind) {
   let q = H.sb.from("mkt_campaigns").select("id, kind, title, goal, persona, planned_at, status, subject, preheader, flow_name, flow_step, brief, theme, hero_url, approved_at, send_at, sent_at, esp_status, esp_campaign_id, updated_at").order("planned_at", { ascending: true, nullsFirst: false }).order("flow_name").order("flow_step");
+  q = q.neq("status", "archived");
   if (kind) q = q.eq("kind", kind);
   const { data, error } = await q;
   if (error) toast(error.message);
@@ -112,14 +113,15 @@ function card(c) {
 // An email that lives only in Omnisend (built there by hand). Shown so the calendar is complete; edit it in Omnisend.
 function extCard(o) {
   const when = o.scheduledAt || o.sentAt || o.updatedAt;
-  return `<a class="ecard ext" href="https://app.omnisend.com/campaigns" target="_blank" rel="noopener">
-    <div class="swatch" style="background:var(--surface-2);border-color:var(--line)"><span class="small muted">OMNI</span></div>
+  return `<a class="ecard ext" href="${esc(o.url || "https://app.omnisend.com/campaigns")}" target="_blank" rel="noopener">
+    <div class="swatch" style="background:#0f0d0c;border-color:#c79a62"><span class="small" style="color:#c79a62">OMNI</span></div>
     <div class="ebody"><div class="row between"><b>${esc(o.name)}</b><span class="sbadge ${OMNI_STATUS[o.status] ?? "s-planned"}">${esc(o.status)}</span></div>
-      <div class="small muted">${esc(fmtDate(when))} · built in Omnisend ↗</div></div></a>`;
+      <div class="small muted">${esc(fmtDate(when))} · ${esc(o.audience || "All subscribers")} · open in Omnisend ↗</div>
+      ${o.subject ? `<div class="small subj">“${esc(o.subject)}”</div>` : ""}</div></a>`;
 }
 
 async function newEmail() {
-  const { data, error } = await H.sb.from("mkt_campaigns").insert({ kind: "campaign", title: "New email", status: "planned", theme: { key: Object.keys(kit.themes ?? {})[0] } }).select("id").single();
+  const { data, error } = await H.sb.from("mkt_campaigns").insert({ kind: "campaign", title: "New email", status: "planned", theme: { key: kit.default_theme || Object.keys(kit.themes ?? {})[0] } }).select("id").single();
   if (error) return toast(error.message);
   open(data.id);
 }
@@ -135,7 +137,9 @@ async function renderToday() {
   const ready = all.filter((c) => c.status === "approved");
   const upcoming = all.filter((c) => c.kind === "campaign" && c.planned_at && new Date(c.planned_at).getTime() > now - 864e5 && c.status === "planned").slice(0, 4);
   const scheduled = all.filter((c) => ["scheduled", "sending"].includes(c.status));
-  const extScheduled = (lib.campaigns ?? []).filter((o) => o.status === "scheduled" && !ours.has(o.id));
+  const extScheduled = (lib.campaigns ?? []).filter((o) => o.status === "scheduled" && !ours.has(o.id)).sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+  const extSent = (lib.campaigns ?? []).filter((o) => o.status === "sent" && !ours.has(o.id)).slice(0, 3);
+  const toWrite = all.filter((c) => c.kind === "flow" && ["planned", "draft"].includes(c.status));
   const t = totals(res);
   view().innerHTML = `
     <div class="hero-note wood"><div><div class="eyebrow">The rule</div><b>Nothing goes out without approval from Mitchell or Brittany.</b>
@@ -152,7 +156,11 @@ async function renderToday() {
       <section><h2>Approved, ready to send <span class="count">${ready.length}</span></h2>${ready.map(card).join("") || `<p class="muted small">None yet.</p>`}
         ${scheduled.length || extScheduled.length ? `<h2 style="margin-top:18px">Scheduled in Omnisend</h2>${scheduled.map(card).join("")}${extScheduled.map(extCard).join("")}` : ""}</section>
     </div>
-    <section><h2>Coming up next</h2>${upcoming.map(card).join("") || `<p class="muted small">Calendar's clear.</p>`}</section>`;
+    ${toWrite.length ? `<section><h2>Automations to finish <span class="count">${toWrite.length}</span></h2>${toWrite.map(card).join("")}</section>` : ""}
+    ${upcoming.length ? `<section><h2>Coming up next</h2>${upcoming.map(card).join("")}</section>` : ""}
+    ${extSent.length ? `<section><h2>Recently sent</h2>${extSent.map(extCard).join("")}</section>` : ""}
+    <section><h2>Running on their own <span class="count">${(lib.automations ?? []).filter((a) => a.enabled).length}</span></h2>
+      <div class="card small">${(lib.automations ?? []).filter((a) => a.enabled).map((a) => `<div class="row between" style="padding:4px 0"><span>${esc(a.name)}</span><span class="muted">${esc(autoWhen(a))}</span></div>`).join("") || "None yet."}</div></section>`;
   wireOpen(view());
 }
 
@@ -178,17 +186,27 @@ async function renderCalendar() {
 }
 
 // ---------------------------------------------------------------- Automations
+const TRIGGER = { "placed order": "after an order", "subscribed to marketing": "after someone signs up", "started checkout": "after an unfinished checkout" };
+function autoWhen(a) {
+  if (/engrav/i.test(a.name ?? "")) return `${a.delay ? a.delay + " " : ""}after an engraving order`;
+  if (a.inactivity) { const h = (parseInt(a.inactivity) || 0) + (/hr/.test(a.delay || "") ? parseInt(a.delay) || 0 : 0); if (/hr/.test(a.inactivity)) return `${h} hours ${TRIGGER[a.trigger] ?? a.trigger ?? ""}`; }
+  return `${a.delay ? a.delay + " " : ""}${TRIGGER[a.trigger] ?? a.trigger ?? ""}`.trim();
+}
 async function renderFlows() {
   frame("Automations");
   const [list, lib] = await Promise.all([loadCampaigns("flow"), getLibrary()]);
-  const groups = {};
-  for (const c of list) (groups[c.flow_name || "Other"] ??= []).push(c);
+  const live = (lib.automations ?? []);
   view().innerHTML = `
-    <div class="card stack"><h2>Live in Omnisend now</h2>
-      ${(lib.automations ?? []).map((a) => `<div class="row between"><span>${esc(a.name)}</span><span class="small muted">${a.status ? esc(a.status) + " · " : ""}updated ${esc(fmtDate(a.updatedAt, { month: "short", day: "numeric" }))}</span></div>`).join("") || `<p class="small muted">${lib.connected ? "No automations yet." : "Connect Omnisend in Settings."}</p>`}
-      <a class="btn sm" href="https://app.omnisend.com/automations" target="_blank" rel="noopener">Open automations in Omnisend ↗</a></div>
-    <div class="card small">Below are the brand versions Claude drafts. Approve one here and its <b>Copy HTML</b> button unlocks so it can be pasted into the matching Omnisend automation step.</div>` +
-    Object.entries(groups).map(([g, items]) => `<section><h2>${esc(g)}</h2>${items.map(card).join("")}</section>`).join("");
+    <section><h2>Live in Omnisend <span class="count">${live.filter((a) => a.enabled).length}</span></h2>
+      ${live.map((a) => `<a class="ecard ext" href="${esc(a.url)}" target="_blank" rel="noopener">
+        <div class="swatch" style="background:#0f0d0c;border-color:#c79a62"><span class="small" style="color:#c79a62">${a.enabled ? "LIVE" : "OFF"}</span></div>
+        <div class="ebody"><div class="row between"><b>${esc(a.name)}</b><span class="sbadge ${a.enabled ? "s-approved" : "s-rejected"}">${a.enabled ? "Live" : "Off"}</span></div>
+          <div class="small muted">Sends ${esc(autoWhen(a))} · ${a.emails.length} email${a.emails.length === 1 ? "" : "s"} · edit in Omnisend ↗</div>
+          ${a.emails.map((e) => `<div class="small subj">“${esc(e.subject)}”</div>`).join("")}</div></a>`).join("") || `<p class="small muted">${lib.connected ? "No automations yet." : "Connect Omnisend in Settings."}</p>`}
+    </section>
+    <section><h2>Approved to build <span class="count">${list.length}</span></h2>
+      <div class="card small">Claude writes these here. Once you approve one, it gets set up in Omnisend and moves to the list above.</div>
+      ${list.map(card).join("") || `<p class="small muted">Nothing waiting.</p>`}</section>`;
   wireOpen(view());
 }
 
@@ -669,18 +687,24 @@ function renderBrand() {
 function renderPlan() {
   frame("The email plan");
   view().innerHTML = `<article class="plan card">
-  <h2>What we're building</h2>
-  <p>An email program that sells boards at full price by making people trust the shop: real wood, real people, real deadlines. No coupon habit. This is the same playbook Montana Knife Company used: own the list, tell the maker's story, release in small batches, and treat best customers like VIPs.</p>
-  <h2>The five pillars</h2>
-  <ol><li><b>Built in Billings</b> — the shop, the crew, the process.</li><li><b>Wood school</b> — end grain vs edge grain, species, why it's easy on knives.</li><li><b>Gifts that last</b> — one board for each person on the list, engraving, bundles, gift cards.</li><li><b>Shop drops</b> — small runs and one-offs, announced ahead, VIPs first.</li><li><b>Built for generations</b> — care, our house-made wax, how a board ages.</li></ol>
-  <h2>The automations (set up once, earn every day)</h2>
-  <p>Automated emails earn far more per send than one-off blasts; abandoned cart is the best earner, then welcome. Live now in Omnisend: Welcome, Abandoned Checkout, Thank You (Post-Purchase), Engraving Details Request. Still to build: a 3-email welcome series, a 3-step abandoned cart, a review request, and a win-back.</p>
-  <h2>The rhythm</h2>
-  <ul><li>Holiday season (now–Dec 15): 2 emails a week, built around real deadlines.</li><li>January–October: 1–2 a week. One story or teaching email, one product or drop email.</li><li>A small-batch shop drop once a month, announced to engaged subscribers 48 hours early.</li><li>Keep sending mainly to people who opened or clicked in the last 90 days to protect deliverability; win back the rest.</li></ul>
-  <h2>Growing the list</h2>
-  <ul><li>Site sign-up form: “Get first pick of shop drops” instead of “10% off.”</li><li>Checkout opt-in box on, and a sign-up card in every box that ships.</li><li>Past customers who never opted in: one permission email asking if they want to hear from us. No marketing without a yes.</li></ul>
+  <h2>Where things stand</h2>
+  <ul><li><b>Sent:</b> Black Walnut Friday launch (Nov 26), 20% off with code BWF2026.</li>
+    <li><b>Scheduled:</b> Black Walnut Friday reminder, Sun Nov 29 at 9 AM · Last call for Christmas delivery, Sat Dec 12 at 9 AM.</li>
+    <li><b>Signup popup</b> on mtblock.com: “Get first pick of our shop drops.”</li></ul>
+  <h2>Automations</h2>
+  <ul><li><b>Welcome</b> — one email, 1 minute after someone signs up. Just this one.</li>
+    <li><b>Thank you</b> — one email, 1 day after any order.</li>
+    <li><b>Care routine</b> — 20 days after any order. Knife stands and rails have a hard finish and need no oil or wax. <i>To be written and approved.</i></li>
+    <li><b>Abandoned checkout</b> — one email, 12 hours after an unfinished checkout.</li>
+    <li><b>Engraving details</b> — 5 minutes after an engraving order; replies go to Mitchell.</li>
+    <li><b>Win-back</b> — one email after 160 days with no purchase. <i>To be written and approved.</i></li>
+    <li>No other post-purchase or welcome emails.</li></ul>
+  <h2>The rules</h2>
+  <ul><li>Nothing goes out without approval from Mitchell or Brittany.</li><li>Discounts only for Black Walnut Friday (once a year) or when Mitchell asks for one.</li>
+    <li>Default design: the dark Black Walnut Friday look. Emails come from Montana Block Co. &lt;mitchell@mtblock.com&gt;.</li>
+    <li>Real dates and real stock only. No made-up reviews, scarcity or hype.</li></ul>
   <h2>How this tab works</h2>
-  <ol><li>Open a planned email (Calendar or Automations) and press <b>Write it</b>. Claude writes the copy, picks products from the live store, and draws a header graphic in a brand theme.</li><li>Edit anything, or tell Claude what to change and press <b>Revise</b>.</li><li><b>Email me a proof</b> to see it in a real inbox.</li><li><b>Approve</b> (Mitchell or Brittany). This locks the exact version. Any edit cancels the approval.</li><li><b>Send…</b> now or on a schedule, typing SEND to confirm. The server re-checks the approval before anything goes out.</li></ol>
+  <ol><li>Open an email and press <b>Write it</b>. Claude writes the copy, picks products from the live store, and draws the header graphic.</li><li>Edit anything, or tell Claude what to change and press <b>Revise</b>.</li><li><b>Email me a proof</b> to see it in a real inbox.</li><li><b>Approve</b> (Mitchell or Brittany). This locks the exact version.</li><li>Campaigns: <b>Send…</b> now or on a schedule, typing SEND to confirm. Automations: approved emails get set up in Omnisend.</li></ol>
   </article>`;
 }
 

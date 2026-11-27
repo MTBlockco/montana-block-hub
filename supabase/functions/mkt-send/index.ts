@@ -75,7 +75,8 @@ Deno.serve(async (req) => {
     }
 
 
-    // Everything already in Omnisend (campaigns + automations), so the Hub shows one calendar.
+    // Everything already in Omnisend (campaigns + automations), with subjects, timing and triggers,
+    // so the Hub shows Omnisend as the source of truth.
     if (action === "library") {
       if (!key) return json({ connected: false });
       const [camps, autos] = await Promise.all([
@@ -83,20 +84,45 @@ Deno.serve(async (req) => {
         omni(key, "/automations?limit=100").catch((e) => ({ error: (e as Error).message })),
       ]);
       const list = (x: any, k: string) => x?.[k] ?? x?.data ?? (Array.isArray(x) ? x : []);
+      const campList = list(camps, "campaigns").filter((c: any) => !/^\[PROOF/.test(c.name ?? "")).slice(0, 40);
+      const autoList = list(autos, "automations").slice(0, 40);
+      const [cd, ad] = await Promise.all([
+        Promise.all(campList.map((c: any) => omni(key, `/campaigns/${c.id ?? c.campaignID}`).catch(() => c))),
+        Promise.all(autoList.map((a: any) => omni(key, `/automations/${a.id ?? a.automationID}`).catch(() => a))),
+      ]);
+      const dur = (d: any) => d ? `${d.amount} ${({ m: "min", h: "hr", d: "day", w: "wk" } as Record<string, string>)[d.units] ?? d.units}${d.amount === 1 ? "" : "s"}` : null;
       return json({
         connected: true,
-        campaigns: list(camps, "campaigns").map((c: any) => ({
+        campaigns: cd.map((c: any) => ({
           id: c.id ?? c.campaignID, name: c.name, status: c.status, channel: c.channel,
-          subject: c.content?.email?.subject ?? c.subject ?? null,
-          scheduledAt: c.sendingSettings?.scheduledAt ?? null, sentAt: c.sentAt ?? c.endDate ?? null,
-          createdAt: c.createdAt, updatedAt: c.updatedAt,
+          subject: c.content?.email?.subject ?? c.subject ?? null, preheader: c.content?.email?.preheader ?? null,
+          sender: c.content?.email?.senderEmail ?? null,
+          audience: (c.audience?.includedSegmentIDs ?? []).length ? "Segments" : "All subscribers",
+          scheduledAt: c.sendingSettings?.scheduledAt ?? null, sentAt: c.startedAt ?? c.sentAt ?? null,
+          createdAt: c.createdAt, updatedAt: c.updatedAt, url: `https://app.omnisend.com/campaigns/edit/${c.id}/content`,
         })),
-        automations: list(autos, "automations").map((a: any) => ({
-          id: a.id ?? a.automationID, name: a.name, status: a.status, trigger: a.trigger?.type ?? a.trigger?.name ?? a.triggerType ?? null,
-          updatedAt: a.updatedAt,
-        })),
+        automations: ad.map((a: any) => {
+          const blocks = a.blocks ?? [];
+          const emails = blocks.filter((b: any) => b.action?.type === "sendEmail").map((b: any) => ({ subject: b.action.sendEmail.subject, preheader: b.action.sendEmail.preheader }));
+          const delay = blocks.find((b: any) => b.type === "delay")?.delay?.duration;
+          const inact = a.trigger?.inactivitySettings?.duration;
+          return {
+            id: a.id ?? a.automationID, name: a.name, enabled: !!a.isEnabled, status: a.isEnabled ? "live" : "off",
+            trigger: a.trigger?.condition?.event ?? null, delay: dur(delay), inactivity: dur(inact), emails,
+            updatedAt: a.updatedAt, url: a.url ?? `https://app.omnisend.com/automation/edit/${a.id}`,
+          };
+        }),
         errors: [camps?.error, autos?.error].filter(Boolean),
       });
+    }
+
+    // Read-only look at one Omnisend campaign, automation or template (ids are Omnisend's 24-char hex ids).
+    if (action === "detail") {
+      if (!key) return json({ connected: false });
+      const kind = ({ campaign: "campaigns", automation: "automations", template: "email-templates" } as Record<string, string>)[String(body.kind)];
+      const oid = String(body.oid ?? "");
+      if (!kind || !/^[a-f0-9]{24}$/i.test(oid)) return json({ error: "Bad id" }, 400);
+      return json({ ok: true, data: await omni(key, `/${kind}/${oid}`) });
     }
 
     // Results: per-email numbers and store totals from Omnisend's Reports API.
