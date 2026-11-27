@@ -1,6 +1,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
 import { SUPABASE_URL, SUPABASE_KEY } from "./config.js";
 import { sayingFor } from "./sayings.js";
+import { renderEmailTab } from "./email-studio.js";
 
 const LOGO = "https://mtblock.com/cdn/shop/files/MONTANA_BLOCK_CO-02.png?v=1747022409&width=600";
 const logoImg = (cls) => `<img class="${cls}" src="${LOGO}" alt="Montana Block Co." onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'${cls}',textContent:'MONTANA BLOCK CO.',style:'font-family:Oswald,sans-serif;font-size:1.4rem;letter-spacing:.08em;text-align:center'}))">`;
@@ -182,6 +183,7 @@ const I = {
   box: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
   ask: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>',
   lumber: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="4" rx="1"/><rect x="3" y="10" width="18" height="4" rx="1"/><rect x="3" y="15" width="18" height="4" rx="1"/><circle cx="19" cy="7" r=".6"/><circle cx="19" cy="12" r=".6"/><circle cx="19" cy="17" r=".6"/></svg>',
+  mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>',
   more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
 };
 
@@ -211,6 +213,7 @@ const VIEWS = {
   materials: { label: "Lumber", icon: I.lumber, render: renderMaterialsView, show: () => canMaterials() },
   sops: { label: "SOPs", icon: I.sop, render: renderSops },
   ask: { label: "Ask", icon: I.ask, render: renderAsk },
+  email: { label: "Email", icon: I.mail, render: (root) => renderEmailTab(root, { sb, esc, toast, state, topbar, wireTopbar }), show: () => can("admin") && !RO(), noTab: true },
   more: { label: "More", icon: I.more, render: renderMore },
 };
 
@@ -323,7 +326,7 @@ function renderShell() {
       <div class="small who">${OFFICE ? "🖥 Office computer<br>" : ""}${RO() ? "👁 View only<br>" : ""}${esc(state.profile.full_name || state.profile.email)}<br>${ROLE_LABEL[state.profile.role]}</div></nav>
     <main class="main" id="view"><div class="empty">Loading…</div></main>
     ${RO() ? '<div class="robanner">👁 View only</div>' : ""}
-    <nav class="tabbar">${shown().filter(([k]) => k !== "more").map(([k, v]) =>
+    <nav class="tabbar">${shown().filter(([k, v]) => k !== "more" && !v.noTab).map(([k, v]) =>
       `<button data-go="${k}" class="${state.view === k ? "active" : ""}">${v.icon}<span>${v.label}</span></button>`).join("")}</nav>
   </div>`;
   $app.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => go(b.dataset.go)));
@@ -3253,9 +3256,11 @@ async function renderMore(root) {
   ];
   const openReq = can("admin") ? (await sb.from("timecard_requests").select("id", { count: "exact", head: true }).eq("status", "open")).count ?? 0 : 0;
   root.innerHTML = `${topbar("More")}
+    ${can("admin") && !RO() ? `<div class="card section row between" style="cursor:pointer" id="goemail"><span>✉️ <strong>Email</strong> <span class="small muted">— write, approve and send marketing emails; see results</span></span><span class="badge">Open</span></div>` : ""}
     <div class="list">${sections.map((s) => `<div class="item" data-sec="${s.k}"><div class="row between"><span class="title">${s.label}</span>${s.k === "requests" && openReq ? `<span class="badge warn">${openReq} open</span>` : ""}</div></div>`).join("")}</div>
     <div id="sec" class="section"></div>`;
   wireTopbar(root);
+  root.querySelector("#goemail")?.addEventListener("click", () => go("email"));
   const sec = root.querySelector("#sec");
   const open = async (k) => {
     root.querySelectorAll("[data-sec]").forEach((el) => (el.style.borderColor = el.dataset.sec === k ? "var(--accent)" : ""));
