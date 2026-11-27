@@ -315,6 +315,14 @@ function paintEditor() {
         <button class="btn primary" id="b-rev" ${dis}>Revise</button>
         ${critiques.length ? `<div class="small muted">Your recent critiques:</div>${critiques.map((e) => `<div class="small hist"><span>${esc(fmtDate(e.at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}</span>${esc(e.detail?.text ?? "")}</div>`).join("")}` : ""}
       </div>` : ""}
+      ${c.html ? `<div class="card stack" id="textcard">
+        <h2>Edit the text</h2>
+        <div class="small muted">Change any words directly, then press Save. Blank line = new paragraph. Steps: one per line.</div>
+        <div><label>Subject line</label><input data-f="subject" value="${esc(c.subject ?? "")}" ${dis}></div>
+        <div><label>Preview text (shows after the subject in the inbox)</label><input data-f="preheader" value="${esc(c.preheader ?? "")}" ${dis}></div>
+        ${textFields(c.blocks ?? [], dis)}
+        <button class="btn primary" id="b-savetext" ${dis}>Save text</button>
+      </div>` : ""}
     </div>
     <div class="col-right">
       <div class="preview-head"><div class="seg"><button data-dev="desktop" class="${ed.device === "desktop" ? "on" : ""}">Desktop</button><button data-dev="mobile" class="${ed.device === "mobile" ? "on" : ""}">Phone</button></div></div>
@@ -328,8 +336,37 @@ function paintEditor() {
   paintApproveBox();
 }
 
+// Every piece of wording in the email, as plain editable boxes (products and links stay as Claude picked them).
+const TEXT_LABEL = { heading: "Section heading", text: "Paragraphs", callout: "Callout (tan line)", note: "Small print", signoff: "Sign-off", quote: "Quote" };
+function textFields(blocks, dis) {
+  const box = (i, k, label, val, rows) => `<div><label>${esc(label)}</label>${rows > 1
+    ? `<textarea data-i="${i}" data-k="${k}" rows="${rows}" ${dis}>${esc(val ?? "")}</textarea>`
+    : `<input data-i="${i}" data-k="${k}" value="${esc(val ?? "")}" ${dis}>`}</div>`;
+  const rowsFor = (t) => Math.min(12, 2 + Math.ceil(String(t ?? "").length / 60) + (String(t ?? "").match(/\n/g) || []).length);
+  return blocks.map((b, i) => {
+    if (b.type === "hero") return box(i, "headline", "Headline", b.headline, 1) + box(i, "sub", "Intro under the headline", b.sub, rowsFor(b.sub));
+    if (b.type === "steps") return box(i, "items", "Steps (one per line)", (b.items ?? []).join("\n"), Math.max(3, (b.items ?? []).length + rowsFor((b.items ?? []).join(" ")) - 1));
+    if (b.type === "button") return box(i, "label", "Link button text", b.label, 1);
+    if (b.type === "product") return box(i, "blurb", `Product note (${ed.products?.[b.handle]?.title ?? b.handle})`, b.blurb, rowsFor(b.blurb));
+    if (TEXT_LABEL[b.type]) return box(i, "text", TEXT_LABEL[b.type], b.text, ["heading", "callout", "signoff"].includes(b.type) ? 1 : rowsFor(b.text));
+    return "";
+  }).join("");
+}
+
 function wireEditor() {
   const c = ed.c;
+  q("#b-savetext")?.addEventListener("click", async () => {
+    if (c.status === "approved" && !confirm("This email is approved. Editing the text cancels the approval. Continue?")) return;
+    const card = q("#textcard");
+    card.querySelectorAll("[data-f]").forEach((el) => (c[el.dataset.f] = el.value.trim()));
+    card.querySelectorAll("[data-i]").forEach((el) => {
+      const b = c.blocks[Number(el.dataset.i)]; if (!b) return;
+      b[el.dataset.k] = el.dataset.k === "items" ? el.value.split("\n").map((x) => x.trim()).filter(Boolean) : el.value.trim();
+    });
+    await rerender();
+    toast("Text saved. The preview is updated.");
+    paintEditor();
+  });
   q("#f-goal")?.addEventListener("change", (e) => { c.goal = e.target.value; save({ goal: c.goal }); });
   q("#f-date")?.addEventListener("change", (e) => { c.planned_at = fromLocalInput(e.target.value); save({ planned_at: c.planned_at }); });
   q("#f-when")?.addEventListener("change", (e) => { c.brief = { ...(c.brief ?? {}), when: e.target.value, trigger: e.target.value, delay: "" }; save({ brief: c.brief }); });
