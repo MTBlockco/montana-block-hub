@@ -1,117 +1,111 @@
-// Renders an email's blocks into email-client-safe HTML (tables + inline styles, 600px, works in Gmail/Outlook/Apple Mail).
-// The same HTML is what Mitchell previews, what gets approved, and what the email service sends.
+// Renders an email's blocks into the Montana Block house template: the same layout, colors and type as the
+// Black Walnut Friday email Mitchell approved (dark charcoal, Montserrat, centered, logo, green rule, white
+// headline, off-white body, tan accents, white square "Shop now" buttons). Tables + inline styles, 600px wide,
+// so it holds up in Gmail, Outlook and Apple Mail. This exact HTML is what's previewed, approved and sent.
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const safeUrl = (u) => /^https:\/\/(www\.)?mtblock\.com(\/|$)/i.test(String(u || "")) ? String(u) : "https://mtblock.com";
 const sized = (u, w) => String(u) + (String(u).includes("?") ? "&" : "?") + "width=" + w;
-const money = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: Number(n) % 1 ? 2 : 0, maximumFractionDigits: 2 });
+const money = (n) => "$" + Number(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-// **bold**, *italic*, [link](https://mtblock.com/...), blank-line paragraphs
-function inline(text, t, linkColor) {
-  return esc(text)
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => `<a href="${esc(safeUrl(url.replace(/&amp;/g, "&")))}" style="color:${linkColor};text-decoration:underline">${label}</a>`)
+// The house template (from the Black Walnut Friday email).
+const C = {
+  page: "#141414", card: "#202020", headline: "#FFFFFF", text: "#F5F1EA", tan: "#C8B89F",
+  link: "#BC7947", rule: "#0A8742", btnBg: "#FFFFFF", btnText: "#202020",
+};
+const LOGO = "https://cgu.soundestlink.com/image/newsletter/6b088b93ebdc98c5f9f92dbf";
+const F = "Montserrat, Verdana, sans-serif";
+
+// Plain text: blank line = new paragraph, single line break kept, [label](https://mtblock.com/...) links.
+// Stray markdown asterisks are removed rather than shown.
+function inline(text) {
+  return esc(String(text ?? "").replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\*/g, ""))
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_m, label, url) => `<a href="${esc(safeUrl(url.replace(/&amp;/g, "&")))}" target="_blank" style="color:${C.link};text-decoration:underline">${label}</a>`)
     .replace(/\n/g, "<br>");
 }
+const paras = (text, style) => String(text ?? "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
+  .map((p, i) => `<p style="margin:${i ? "14px" : "0"} 0 0;${style}">${inline(p)}</p>`).join("");
 
-const FONT_BODY = "Helvetica, Arial, sans-serif";
-const FONT_DISPLAY = "'Oswald', 'Arial Narrow', 'Helvetica Neue', Arial, sans-serif";
-const FONT_SERIF = "'Lora', Georgia, 'Times New Roman', serif";
+const section = (inner, pad = "12px 24px") => `<tr><td class="px" style="padding:${pad};background-color:${C.card}">${inner}</td></tr>`;
+const cell = (inner, style) => `<table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="padding:12px;${style}">${inner}</td></tr></table>`;
 
-function button(label, url, t) {
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:6px auto"><tr>
-    <td align="center" bgcolor="${t.accent}" style="border-radius:6px">
-      <a href="${esc(safeUrl(url))}" target="_blank" style="display:inline-block;padding:14px 30px;font-family:${FONT_DISPLAY};font-size:16px;letter-spacing:2px;text-transform:uppercase;color:${t.button_text};text-decoration:none;font-weight:600;border-radius:6px">${esc(label)}</a>
-    </td></tr></table>`;
+function shopButton(url, label = "Shop now") {
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:${C.btnBg};border:2px solid ${C.btnText};border-collapse:separate"><tr>
+    <td align="center" valign="middle"><a href="${esc(url)}" target="_blank" style="text-decoration:none;display:inline-block;width:100%;padding:16px 0;text-align:center;color:${C.btnText};font-family:${F};font-size:16px;line-height:1.2">${esc(label)}</a></td></tr></table>`;
 }
 
-function productCard(p, blurb, t) {
+function productCell(p, width) {
   if (!p) return "";
   const price = p.price_max > p.price ? `From ${money(p.price)}` : money(p.price);
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${t.panel};border-radius:10px">
-    <tr><td style="padding:0">${p.image ? `<a href="${esc(p.url)}" target="_blank"><img src="${esc(sized(p.image, 1080))}" width="536" alt="${esc(p.title)}" style="display:block;width:100%;max-width:536px;height:auto;border-radius:10px 10px 0 0;border:0"></a>` : ""}</td></tr>
-    <tr><td style="padding:18px 20px 22px">
-      <div style="font-family:${FONT_DISPLAY};font-size:20px;letter-spacing:1px;text-transform:uppercase;color:${t.text};line-height:1.25">${esc(p.title)}</div>
-      <div style="font-family:${FONT_BODY};font-size:15px;color:${t.accent2};margin:6px 0 10px;font-weight:bold">${price}</div>
-      ${blurb ? `<div style="font-family:${FONT_BODY};font-size:15px;line-height:1.6;color:${t.muted};margin:0 0 14px">${inline(blurb, t, t.accent)}</div>` : ""}
-      <a href="${esc(p.url)}" target="_blank" style="font-family:${FONT_DISPLAY};font-size:14px;letter-spacing:2px;text-transform:uppercase;color:${t.accent};text-decoration:none;font-weight:600">See it in the shop &rarr;</a>
-    </td></tr></table>`;
+  return `<table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%">
+    ${p.image ? `<tr><td align="center" style="padding:12px"><a href="${esc(p.url)}" target="_blank"><img src="${esc(sized(p.image, width * 2))}" width="${width}" alt="${esc(p.title)}" class="mobile-image" style="display:block;width:${width}px;max-width:100%;height:auto;border:0"></a></td></tr>` : ""}
+    <tr><td align="center" valign="top" height="72" style="height:72px;padding:12px;font-family:${F};font-size:16px;line-height:150%;color:${C.text}">${esc(p.title)}</td></tr>
+    <tr><td align="center" style="padding:0 12px 12px;font-family:${F};font-size:14px;line-height:150%;color:${C.tan};font-weight:700">${price}</td></tr>
+    <tr><td style="padding:12px">${shopButton(p.url)}</td></tr></table>`;
 }
 
-function productGrid(list, t) {
-  const cells = list.filter(Boolean).map((p) => `<td class="stack" width="50%" valign="top" style="padding:6px">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${t.panel};border-radius:10px"><tr><td>
-      ${p.image ? `<a href="${esc(p.url)}" target="_blank"><img src="${esc(sized(p.image, 600))}" width="256" alt="${esc(p.title)}" style="display:block;width:100%;height:auto;border-radius:10px 10px 0 0;border:0"></a>` : ""}
-      </td></tr><tr><td style="padding:12px 14px 16px">
-      <div style="font-family:${FONT_DISPLAY};font-size:15px;letter-spacing:1px;text-transform:uppercase;color:${t.text};line-height:1.3">${esc(p.title)}</div>
-      <div style="font-family:${FONT_BODY};font-size:14px;color:${t.accent2};margin:4px 0 8px;font-weight:bold">${p.price_max > p.price ? "From " : ""}${money(p.price)}</div>
-      <a href="${esc(p.url)}" target="_blank" style="font-family:${FONT_DISPLAY};font-size:13px;letter-spacing:2px;text-transform:uppercase;color:${t.accent};text-decoration:none">Shop &rarr;</a>
-      </td></tr></table></td>`);
-  let rows = "";
-  for (let i = 0; i < cells.length; i += 2) rows += `<tr>${cells[i]}${cells[i + 1] ?? `<td class="stack" width="50%"></td>`}</tr>`;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${rows}</table>`;
-}
+export function renderEmail({ subject, preheader, blocks = [], kit = {}, products = {} }) {
+  const socials = kit.socials ?? {};
+  const icons = ["facebook", "instagram", "youtube"].filter((k) => socials[k]).map((k) =>
+    `<td style="padding:12px"><a href="${esc(socials[k])}" target="_blank"><img width="24" height="24" alt="${k}" border="0" src="https://cgu.soundestlink.com/dynamicImage/social/${k}/48/24/default" style="width:24px;height:auto;display:block"></a></td>`).join("");
 
-export function renderEmail({ subject, preheader, blocks = [], theme, kit, heroUrl, heroAlt, products = {} }) {
-  const t = theme;
-  const pad = (inner, extra = "") => `<tr><td style="padding:0 32px ${extra}" class="px">${inner}</td></tr>`;
   const body = blocks.map((b) => {
     switch (b.type) {
-      case "hero": return `${heroUrl ? `<tr><td style="padding:0"><img src="${esc(heroUrl)}" width="600" alt="${esc(heroAlt || [b.eyebrow, b.headline, b.sub].filter(Boolean).join(" — "))}" style="display:block;width:100%;max-width:600px;height:auto;border:0"></td></tr>`
-        : `<tr><td style="padding:44px 32px 8px;text-align:center" class="px">
-            ${b.eyebrow ? `<div style="font-family:${FONT_DISPLAY};font-size:13px;letter-spacing:4px;text-transform:uppercase;color:${t.accent2}">${esc(b.eyebrow)}</div>` : ""}
-            <div style="font-family:${FONT_DISPLAY};font-size:38px;line-height:1.1;letter-spacing:1px;text-transform:uppercase;color:${t.text};margin:10px 0">${esc(b.headline)}</div></td></tr>`}
-        ${b.sub ? pad(`<div style="font-family:${FONT_SERIF};font-style:italic;font-size:19px;line-height:1.5;color:${t.accent2};text-align:center;padding-top:26px">${esc(b.sub)}</div>`) : ""}`;
-      case "heading": return pad(`<div style="font-family:${FONT_DISPLAY};font-size:24px;line-height:1.2;letter-spacing:1px;text-transform:uppercase;color:${t.text};padding-top:28px">${esc(b.text)}</div>`);
-      case "text": return pad(String(b.text ?? "").split(/\n\s*\n/).map((para) => `<p style="font-family:${FONT_BODY};font-size:16px;line-height:1.65;color:${t.text};margin:16px 0 0">${inline(para.trim(), t, t.accent)}</p>`).join(""));
-      case "product": return pad(`<div style="padding-top:24px">${productCard(products[b.handle], b.blurb, t)}</div>`);
-      case "products": return `<tr><td style="padding:18px 26px 0" class="px2">${productGrid((b.handles ?? []).map((h) => products[h]), t)}</td></tr>`;
-      case "quote": return pad(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:24px"><tr><td style="border-left:3px solid ${t.accent2};padding:6px 0 6px 18px">
-          <div style="font-family:${FONT_SERIF};font-style:italic;font-size:19px;line-height:1.5;color:${t.text}">&ldquo;${esc(b.text)}&rdquo;</div>
-          ${b.cite ? `<div style="font-family:${FONT_BODY};font-size:13px;color:${t.muted};margin-top:8px">&mdash; ${esc(b.cite)}</div>` : ""}</td></tr></table>`);
-      case "button": return pad(`<div style="padding-top:26px">${button(b.label || "Shop now", b.url, t)}</div>`);
-      case "steps": return pad(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:18px">${(b.items ?? []).map((it, i) => `<tr>
-          <td width="40" valign="top" style="padding:8px 0"><div style="width:30px;height:30px;line-height:30px;border-radius:15px;background:${t.accent};color:${t.button_text};text-align:center;font-family:${FONT_DISPLAY};font-size:15px">${i + 1}</div></td>
-          <td valign="top" style="padding:12px 0 8px;font-family:${FONT_BODY};font-size:16px;line-height:1.5;color:${t.text}">${inline(it, t, t.accent)}</td></tr>`).join("")}</table>`);
-      case "divider": return pad(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:30px"><tr><td style="border-top:1px solid ${t.accent2};font-size:0;line-height:0;opacity:.6">&nbsp;</td></tr></table>`);
-      case "note": return pad(`<div style="font-family:${FONT_BODY};font-size:13px;line-height:1.55;color:${t.muted};margin-top:20px;padding:12px 14px;border:1px dashed ${t.accent2};border-radius:8px">${inline(b.text, t, t.accent)}</div>`);
-      case "signoff": return pad(`<div style="font-family:${FONT_SERIF};font-style:italic;font-size:17px;line-height:1.5;color:${t.accent2};margin-top:28px">${inline(b.text, t, t.accent)}</div>`);
+      case "hero": return section(`${b.eyebrow ? cell(esc(b.eyebrow), `text-align:center;font-family:${F};font-size:13px;letter-spacing:2px;text-transform:uppercase;color:${C.tan}`) : ""}
+          ${cell(`<strong>${esc(b.headline)}</strong>`, `text-align:center;font-family:${F};font-size:36px;line-height:125%;color:${C.headline}`)}
+          ${b.sub ? cell(paras(b.sub, "text-align:center"), `font-family:${F};font-size:14px;line-height:150%;color:${C.text}`) : ""}`);
+      case "heading": return section(cell(`<strong>${esc(b.text)}</strong>`, `text-align:center;font-family:${F};font-size:24px;line-height:125%;color:${C.text}`));
+      case "text": return section(cell(paras(b.text, "text-align:center"), `font-family:${F};font-size:14px;line-height:150%;color:${C.text}`));
+      case "callout": return section(cell(`<strong><em>${inline(b.text)}</em></strong>`, `text-align:center;font-family:${F};font-size:28px;line-height:1.2;color:${C.tan}`));
+      case "steps": return section(cell((b.items ?? []).map((it, i) => `<p style="margin:${i ? "12px" : "0"} 0 0;text-align:center"><strong style="color:${C.tan}">${i + 1}.</strong> ${inline(it)}</p>`).join(""), `font-family:${F};font-size:14px;line-height:150%;color:${C.text}`));
+      case "product": {
+        const p = products[b.handle];
+        return p ? section(`<table role="presentation" border="0" cellspacing="0" cellpadding="0" width="300" align="center" class="mobile-table"><tr><td>${productCell(p, 276)}</td></tr></table>
+          ${b.blurb ? cell(paras(b.blurb, "text-align:center"), `font-family:${F};font-size:14px;line-height:150%;color:${C.text}`) : ""}`) : "";
+      }
+      case "products": {
+        const list = (b.handles ?? []).map((h) => products[h]).filter(Boolean);
+        let rows = "";
+        for (let i = 0; i < list.length; i += 2) rows += `<tr><td class="stack-column" valign="top" width="276" style="width:276px">${productCell(list[i], 252)}</td><td class="stack-column" valign="top" width="276" style="width:276px">${list[i + 1] ? productCell(list[i + 1], 252) : ""}</td></tr>`;
+        return section(`<table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%">${rows}</table>`, "24px");
+      }
+      case "button": return section(cell(`<a href="${esc(safeUrl(b.url))}" target="_blank" style="color:${C.link};text-decoration:none"><strong>${esc(String(b.label || "Shop now").toUpperCase())} &rarr;</strong></a>`, `text-align:center;font-family:${F};font-size:20px;line-height:125%`));
+      case "quote": return section(cell(`<em>&ldquo;${esc(b.text)}&rdquo;</em>${b.cite ? `<br><span style="font-size:13px;color:${C.tan}">&mdash; ${esc(b.cite)}</span>` : ""}`, `text-align:center;font-family:${F};font-size:16px;line-height:150%;color:${C.text}`));
+      case "divider": return section(`<table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="padding:6px 12px"><table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="font-size:0;line-height:0;border-top:1px dashed #000000">&nbsp;</td></tr></table></td></tr></table>`);
+      case "note": return section(cell(paras(b.text, "text-align:center"), `font-family:${F};font-size:13px;line-height:150%;color:${C.tan}`));
+      case "signoff": return section(cell(inline(b.text), `text-align:center;font-family:${F};font-size:14px;line-height:150%;color:${C.text}`), "12px 24px 24px");
       default: return "";
     }
   }).join("\n");
 
-  const socials = Object.entries(kit.socials ?? {}).map(([k, u]) => `<a href="${esc(u)}" target="_blank" style="color:${t.muted};text-decoration:underline">${esc({ youtube: "YouTube", instagram: "Instagram", facebook: "Facebook" }[k] ?? k)}</a>`).join(" &nbsp;&middot;&nbsp; ");
-  const header = "#261811";
-
   return `<!DOCTYPE html>
 <html lang="en" xmlns="http://www.w3.org/1999/xhtml">
 <head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="x-apple-disable-message-reformatting">
-<meta name="color-scheme" content="${t.dark ? "dark" : "light"}"><meta name="supported-color-schemes" content="light dark">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="x-apple-disable-message-reformatting"><meta name="format-detection" content="telephone=no">
 <title>${esc(subject)}</title>
-<link href="https://fonts.googleapis.com/css2?family=Lora:ital@1&family=Oswald:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
 <style>
-  body{margin:0;padding:0;background:${t.bg}} img{border:0;outline:none;text-decoration:none}
-  a{color:${t.accent}} table{border-collapse:collapse}
-  @media (max-width:620px){ .wrap{width:100%!important} .px{padding-left:20px!important;padding-right:20px!important} .px2{padding-left:14px!important;padding-right:14px!important} .stack{display:block!important;width:100%!important} }
+  html,body{margin:0!important;padding:0!important;width:100%!important;-webkit-text-size-adjust:none} table{border-collapse:collapse} img{border:0;-ms-interpolation-mode:bicubic}
+  a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important}
+  @media screen and (max-width:600px){ .wrap{width:100%!important} .px{padding-left:12px!important;padding-right:12px!important} .mobile-table{width:100%!important} .mobile-image{width:100%!important;height:auto!important} }
+  @media screen and (max-width:480px){ .stack-column{display:block!important;width:100%!important} }
 </style>
 </head>
-<body style="margin:0;padding:0;background:${t.bg}">
-<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">${esc(preheader)}${"&#8199;&#65279;&#847; ".repeat(40)}</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:${t.bg}"><tr><td align="center" style="padding:24px 10px">
-<table role="presentation" class="wrap" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;background:${t.bg}">
-  <tr><td align="center" bgcolor="${header}" style="background:${header};padding:22px 20px;border-radius:12px 12px 0 0">
-    <a href="https://mtblock.com" target="_blank"><img src="${esc(kit.logo_url)}" width="220" alt="Montana Block Co." style="display:block;width:220px;max-width:70%;height:auto;margin:0 auto;border:0"></a>
-  </td></tr>
+<body style="margin:0;padding:0;background-color:${C.page}">
+<div style="display:none;font-size:0;line-height:0;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all">${esc(preheader)}${"&#847; &zwnj; ".repeat(60)}</div>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color:${C.page}"><tr><td align="center">
+<table role="presentation" class="wrap" width="600" border="0" cellpadding="0" cellspacing="0" style="width:600px;margin:0 auto;background-color:${C.card}">
+  <tr><td align="center" style="padding:36px 24px 12px;background-color:${C.card}"><a href="https://mtblock.com" target="_blank"><img src="${LOGO}" width="247" alt="Montana Block Co." style="display:block;width:247px;max-width:80%;height:auto;margin:0 auto;border:0"></a></td></tr>
+  <tr><td style="padding:12px 36px 0;background-color:${C.card}"><table role="presentation" border="0" cellspacing="0" cellpadding="0" width="100%"><tr><td style="font-size:0;line-height:0;border-top:4px solid ${C.rule}">&nbsp;</td></tr></table></td></tr>
   ${body}
-  <tr><td style="padding:40px 32px 10px" class="px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr><td style="border-top:1px solid ${t.panel};font-size:0;line-height:0">&nbsp;</td></tr></table></td></tr>
-  <tr><td align="center" style="padding:6px 32px 34px;font-family:${FONT_BODY};font-size:12px;line-height:1.7;color:${t.muted}" class="px">
-    <div style="font-family:${FONT_DISPLAY};font-size:13px;letter-spacing:3px;text-transform:uppercase;color:${t.accent2};margin-bottom:6px">Handmade in Billings, Montana</div>
-    ${socials ? `<div style="margin-bottom:8px">${socials}</div>` : ""}
-    ${esc(kit.legal_name || kit.name)} &middot; ${esc(kit.address)}${kit.phone ? ` &middot; ${esc(kit.phone)}` : ""}<br>
-    You're getting this because you signed up or ordered at mtblock.com.<br>
-    <a href="[[unsubscribe_link]]" style="color:${t.muted};text-decoration:underline">Unsubscribe</a>
+  <tr><td class="px" style="padding:24px 36px;background-color:${C.card}">
+    ${icons ? `<table role="presentation" border="0" cellspacing="0" cellpadding="0"><tr>${icons}</tr></table>` : ""}
+    <div style="padding:12px;font-family:${F};font-size:12px;line-height:150%;color:#FFFFFF">
+      <p style="margin:0">&copy; ${esc(kit.legal_name || "Montana Block")}</p><br>
+      <p style="margin:0">${esc(kit.address || "")}${kit.phone ? ` &middot; ${esc(kit.phone)}` : ""}</p><br>
+      <p style="margin:0">You're getting this email because you subscribed on our site or bought from us.</p><br>
+      <p style="margin:0"><a href="[[unsubscribe_link]]" target="_blank" style="color:${C.tan}">Unsubscribe</a></p>
+    </div>
   </td></tr>
 </table>
 </td></tr></table>

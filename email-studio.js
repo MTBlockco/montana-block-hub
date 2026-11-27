@@ -102,9 +102,8 @@ async function getLibrary(force = false) {
 }
 
 function card(c) {
-  const t = themeOf(c.theme?.key);
   return `<button class="ecard" data-open="${c.id}">
-    <div class="swatch" style="background:${t.bg};border-color:${t.accent}">${c.hero_url ? `<img src="${esc(c.hero_url)}" alt="">` : `<span style="color:${t.accent2}">${esc((c.flow_name || "MB").slice(0, 2).toUpperCase())}</span>`}</div>
+    <div class="swatch" style="background:#202020;border-color:#0A8742"><span style="color:#C8B89F">${esc((c.flow_name || "MB").slice(0, 2).toUpperCase())}</span></div>
     <div class="ebody"><div class="row between"><b>${esc(c.title)}</b>${badge(c.status)}</div>
       <div class="small muted">${c.kind === "flow" ? esc(`${c.brief?.trigger ?? ""} · ${c.brief?.delay ?? ""}`) : esc(fmtDate(c.planned_at))}${c.persona && c.persona !== "all" ? " · " + esc(personaName(c.persona)) : ""}</div>
       ${c.subject ? `<div class="small subj">“${esc(c.subject)}”</div>` : `<div class="small muted">${esc(c.goal ?? "")}</div>`}
@@ -294,12 +293,11 @@ function paintEditor() {
           ${c.kind === "campaign" ? `<div><label>Send date (Mountain)</label><input id="f-date" type="datetime-local" value="${toLocalInput(c.planned_at)}" ${dis}></div>` : `<div><label>Trigger</label><input disabled value="${esc((c.brief?.trigger ?? "") + " · " + (c.brief?.delay ?? ""))}"></div>`}
           <div><label>Who it's for</label><select id="f-persona" ${dis}><option value="all">Everyone</option>${personas.map((p) => `<option value="${p.key}" ${c.persona === p.key ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
         </div>
-        <div><label>Theme</label><div class="themes">${Object.entries(themes).map(([k, t]) => `<button class="theme-dot ${c.theme?.key === k ? "on" : ""}" data-theme="${k}" title="${esc(t.name)}" style="background:${t.bg};border-color:${t.accent}" ${dis}><i style="background:${t.accent}"></i><i style="background:${t.accent2}"></i></button>`).join("")}</div>
-          <div class="small muted" id="themename">${esc(themeOf(c.theme?.key).name ?? "")}</div></div>
+        <div class="small muted">Design: the house template from the Black Walnut Friday email.</div>
         <div><label>Notes for Claude (optional)</label><textarea id="f-notes" rows="3" placeholder="e.g. Lead with the walnut Colossus. Mention we have 3 left. Keep it under 150 words." ${dis}></textarea></div>
         <div class="row wrap">
           <button class="btn primary" id="b-gen" ${dis}>${c.html ? "Rewrite from scratch" : "✍ Write it"}</button>
-          ${c.html ? `<button class="btn" id="b-rev" ${dis}>Revise with my notes</button><button class="btn" id="b-art" ${dis}>New graphic</button>` : ""}
+          ${c.html ? `<button class="btn" id="b-rev" ${dis}>Revise with my notes</button>` : ""}
         </div>
         ${c.brief?.rationale ? `<div class="small rationale"><b>Why this angle:</b> ${esc(c.brief.rationale)}</div>` : ""}
         ${c.brief?.needs_from_mitchell ? `<div class="small warn">Needs from you: ${esc(c.brief.needs_from_mitchell)}</div>` : ""}
@@ -312,15 +310,15 @@ function paintEditor() {
         <div><label>Audience</label><select id="f-aud" ${dis}></select><div class="small muted" id="audnote"></div></div>
       </div>
       <div class="card stack"><h2>Content</h2><div id="blocks"></div>
-        <div class="row wrap"><select id="addtype" ${dis}><option value="">+ Add a block…</option>${["heading", "text", "product", "products", "button", "steps", "quote", "note", "divider", "signoff"].map((t) => `<option>${t}</option>`).join("")}</select></div>
+        <div class="row wrap"><select id="addtype" ${dis}><option value="">+ Add a block…</option>${["heading", "text", "callout", "product", "products", "button", "steps", "quote", "note", "divider", "signoff"].map((t) => `<option>${t}</option>`).join("")}</select></div>
       </div>` : ""}
       <div class="card stack"><h2>History</h2><div class="small">${ed.events.map((e) => `<div class="hist"><span>${esc(fmtDate(e.at))}</span> ${esc(e.action.replace(/_/g, " "))}${e.detail?.to ? " → " + esc(e.detail.to.join(", ")) : ""}${e.detail?.error ? ` <span class="bad">${esc(e.detail.error)}</span>` : ""}</div>`).join("") || "No activity yet."}</div></div>
     </div>
     <div class="col-right">
       <div class="preview-head"><div class="seg"><button data-dev="desktop" class="${ed.device === "desktop" ? "on" : ""}">Desktop</button><button data-dev="mobile" class="${ed.device === "mobile" ? "on" : ""}">Phone</button></div>
-        ${c.hero_url ? `<a class="btn sm" href="${esc(c.hero_url)}" target="_blank" rel="noopener">Graphic ↗</a>` : ""}</div>
+        </div>
       ${c.html ? `<div class="inbox"><div class="from">${esc(kit.sender_name || "Montana Block Co.")}</div><div class="isubj">${esc(c.subject ?? "")}</div><div class="ipre">${esc(c.preheader ?? "")}</div></div>` : ""}
-      <div class="frame ${ed.device}">${c.html ? `<iframe id="pv" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview"></iframe>` : `<div class="empty">No draft yet.<br>Fill in the brief and press <b>Write it</b>. Claude writes the copy, picks products from the live store, and designs the header graphic in your brand.</div>`}</div>
+      <div class="frame ${ed.device}">${c.html ? `<iframe id="pv" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview"></iframe>` : `<div class="empty">No draft yet.<br>Fill in the brief and press <b>Write it</b>. Claude writes the copy and picks products from the live store; it lands in the Black Walnut Friday template.</div>`}</div>
       <div class="card stack approve-box" id="approvebox"></div>
     </div>
   </div>`;
@@ -338,11 +336,6 @@ function wireEditor() {
   onMeta("f-goal", "goal");
   onMeta("f-date", "planned_at", fromLocalInput);
   onMeta("f-persona", "persona");
-  $root.querySelectorAll(".theme-dot").forEach((b) => (b.onclick = async () => {
-    c.theme = { ...(c.theme ?? {}), key: b.dataset.theme };
-    if (c.html) { await rerender(); toast("Theme changed. Press New graphic to redraw the header in these colors."); } else await save({ theme: c.theme });
-    paintEditor();
-  }));
   $root.querySelectorAll(".subj-opt").forEach((b) => (b.onclick = async () => { c.subject = b.textContent; await rerender(); paintEditor(); }));
   const subj = q("#f-subject");
   if (subj) {
@@ -357,10 +350,9 @@ function wireEditor() {
   }));
   q("#b-gen")?.addEventListener("click", () => write("generate"));
   q("#b-rev")?.addEventListener("click", () => write("revise"));
-  q("#b-art")?.addEventListener("click", () => write("graphic"));
   q("#addtype")?.addEventListener("change", (e) => {
     const t = e.target.value; e.target.value = ""; if (!t) return;
-    const blank = { heading: { text: "Heading" }, text: { text: "Write something here." }, product: { handle: Object.keys(catalog ?? {})[0] ?? "", blurb: "" }, products: { handles: Object.keys(catalog ?? {}).slice(0, 2) }, button: { label: "Shop now", url: "https://mtblock.com/collections/all" }, steps: { items: ["Step one", "Step two"] }, quote: { text: "", cite: "" }, note: { text: "" }, divider: {}, signoff: { text: "— Mitchell and the crew at Montana Block" } }[t];
+    const blank = { callout: { text: "Order by Dec 14" }, heading: { text: "Heading" }, text: { text: "Write something here." }, product: { handle: Object.keys(catalog ?? {})[0] ?? "", blurb: "" }, products: { handles: Object.keys(catalog ?? {}).slice(0, 2) }, button: { label: "Shop now", url: "https://mtblock.com/collections/all" }, steps: { items: ["Step one", "Step two"] }, quote: { text: "", cite: "" }, note: { text: "" }, divider: {}, signoff: { text: "— Mitchell and the crew at Montana Block" } }[t];
     for (const h of [blank.handle, ...(blank.handles ?? [])]) if (h && catalog?.[h]) ed.products[h] = catalog[h];
     const i = c.blocks.length - (c.blocks.at(-1)?.type === "signoff" ? 1 : 0);
     c.blocks.splice(i, 0, { type: t, ...blank });
@@ -374,13 +366,10 @@ function guard() {
 }
 
 // Re-render the HTML from blocks and save. Editing an approved email cancels its approval (the database enforces this too).
-async function rerender({ regraphic = false } = {}) {
+async function rerender() {
   if (!guard()) return;
   const c = ed.c;
   if (c.status === "approved") toast("You edited an approved email, so its approval was cancelled. Approve it again when you're happy.");
-  if (regraphic && c.hero_svg) {
-    c.hero_url = await uploadHero(c.id, c.hero_svg).catch((e) => { toast("Graphic upload failed: " + e.message); return c.hero_url; });
-  }
   c.html = renderEmail({ subject: c.subject, preheader: c.preheader, blocks: c.blocks, theme: themeOf(c.theme?.key), kit, heroUrl: c.hero_url, heroAlt: c.brief?.hero_alt, products: ed.products });
   const pv = q("#pv"); if (pv) pv.srcdoc = c.html;
   await save({ subject: c.subject, preheader: c.preheader, blocks: c.blocks, html: c.html, theme: c.theme, hero_url: c.hero_url, brief: { ...c.brief, _products: ed.products }, ...(c.status === "planned" ? { status: "draft" } : {}) });
@@ -406,23 +395,21 @@ async function write(action) {
   const notes = q("#f-notes")?.value ?? "";
   ed.busy = true;
   const btns = $root.querySelectorAll("#b-gen,#b-rev,#b-art"); btns.forEach((b) => (b.disabled = true));
-  const label = { generate: "Claude is writing the email and drawing the graphic… (about 30–60 seconds)", revise: "Claude is revising…", graphic: "Claude is drawing a new graphic…" }[action];
+  const label = { generate: "Claude is writing and proofreading the email… (about a minute)", revise: "Claude is revising and proofreading…" }[action];
   q(".frame").insertAdjacentHTML("afterbegin", `<div class="working"><div class="spinner"></div>${label}</div>`);
   try {
     if (c.status === "approved") { await H.sb.rpc("mkt_unapprove", { p_id: c.id }); c.status = "draft"; }
     const r = await fn("mkt-generate", { action, id: c.id, instructions: notes });
     const d = r.draft;
     for (const p of r.products ?? []) ed.products[p.handle] = p;
-    if (action !== "graphic") {
-      c.subject_options = d.subject_options; c.subject = d.subject; c.preheader = d.preheader; c.blocks = d.blocks;
-      c.theme = { ...(c.theme ?? {}), key: d.theme_key || c.theme?.key };
-    }
-    c.hero_svg = d.hero_svg;
-    c.brief = { ...(c.brief ?? {}), rationale: action === "graphic" ? c.brief?.rationale : d.rationale, hero_alt: d.hero_alt };
-    await save({ subject_options: c.subject_options, subject: c.subject, preheader: c.preheader, blocks: c.blocks, hero_svg: c.hero_svg, brief: { ...c.brief, _products: ed.products }, theme: c.theme });
-    await rerender({ regraphic: true });
+    c.subject_options = d.subject_options; c.subject = d.subject; c.preheader = d.preheader; c.blocks = d.blocks;
+    c.theme = { key: kit.default_theme || "black_walnut" };
+    c.hero_svg = null; c.hero_url = null;
+    c.brief = { ...(c.brief ?? {}), rationale: d.rationale };
+    await save({ subject_options: c.subject_options, subject: c.subject, preheader: c.preheader, blocks: c.blocks, hero_svg: null, hero_url: null, brief: { ...c.brief, _products: ed.products }, theme: c.theme });
+    await rerender();
     await H.sb.from("mkt_events").insert({ campaign_id: c.id, action: "generated", detail: { action } });
-    toast(action === "graphic" ? "New graphic is in." : "Draft is ready for review.");
+    toast("Draft is ready for review.");
     renderEditor(c.id);
   } catch (e) {
     toast(e.message);
@@ -430,44 +417,6 @@ async function write(action) {
   } finally {
     ed && (ed.busy = false); btns.forEach((b) => (b.disabled = false));
   }
-}
-
-// ------------------------------------------------ Hero graphic → PNG (email apps can't show SVG)
-let fontCss = null;
-async function embeddedFonts() {
-  if (fontCss != null) return fontCss;
-  const css = await (await fetch("https://fonts.googleapis.com/css2?family=Oswald:wght@500;600&family=Lora:ital@1&display=swap")).text();
-  const faces = css.split("/*").filter((chunk) => chunk.startsWith(" latin */")).map((chunk) => chunk.slice(chunk.indexOf("@font-face")));
-  const out = [];
-  for (const face of faces) {
-    const url = face.match(/url\(([^)]+)\)/)?.[1];
-    if (!url) continue;
-    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    let bin = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    out.push(face.replace(/url\([^)]+\)/, `url(data:font/woff2;base64,${btoa(bin)})`));
-  }
-  fontCss = out.join("\n");
-  return fontCss;
-}
-async function svgToPng(svg) {
-  let s = svg;
-  try { s = s.replace(/<svg([^>]*)>/, `<svg$1><style>${await embeddedFonts()}</style>`); } catch {}
-  const url = URL.createObjectURL(new Blob([s], { type: "image/svg+xml" }));
-  const img = new Image();
-  await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error("The graphic couldn't be drawn. Try New graphic.")); img.src = url; });
-  await new Promise((r) => setTimeout(r, 150));
-  const cv = document.createElement("canvas"); cv.width = 1200; cv.height = 600;
-  cv.getContext("2d").drawImage(img, 0, 0, 1200, 600);
-  URL.revokeObjectURL(url);
-  return await new Promise((ok) => cv.toBlob(ok, "image/png"));
-}
-async function uploadHero(id, svg) {
-  const png = await svgToPng(svg);
-  const path = `${id}/hero-${Date.now()}.png`;
-  const { error } = await H.sb.storage.from("mkt-assets").upload(path, png, { contentType: "image/png", upsert: false, cacheControl: "31536000" });
-  if (error) throw error;
-  return H.sb.storage.from("mkt-assets").getPublicUrl(path).data.publicUrl;
 }
 
 // ------------------------------------------------ Block editor
@@ -478,8 +427,8 @@ function paintBlocks() {
   const prodOpts = (sel) => Object.values(source).map((p) => `<option value="${esc(p.handle)}" ${p.handle === sel ? "selected" : ""}>${esc(p.title)} — $${p.price}${p.stock != null ? ` (${p.stock} in stock)` : ""}</option>`).join("");
   el.innerHTML = (c.blocks ?? []).map((b, i) => {
     let f = "";
-    if (b.type === "hero") f = `<input data-k="eyebrow" value="${esc(b.eyebrow ?? "")}" placeholder="Small line above" ${dis}><input data-k="headline" value="${esc(b.headline ?? "")}" placeholder="Headline (in the graphic)" ${dis}><input data-k="sub" value="${esc(b.sub ?? "")}" placeholder="Line under the graphic" ${dis}><div class="small muted">Headline words live in the graphic. Changed them? Press “New graphic” to redraw.</div>`;
-    else if (["heading", "note", "signoff"].includes(b.type)) f = `<input data-k="text" value="${esc(b.text ?? "")}" ${dis}>`;
+    if (b.type === "hero") f = `<input data-k="headline" value="${esc(b.headline ?? "")}" placeholder="Headline" ${dis}><textarea data-k="sub" rows="2" placeholder="Intro line under the headline (optional)" ${dis}>${esc(b.sub ?? "")}</textarea>`;
+    else if (["heading", "note", "signoff", "callout"].includes(b.type)) f = `<input data-k="text" value="${esc(b.text ?? "")}" ${dis}>`;
     else if (b.type === "text") f = `<textarea data-k="text" rows="${Math.min(10, 2 + Math.ceil((b.text ?? "").length / 70))}" ${dis}>${esc(b.text ?? "")}</textarea>`;
     else if (b.type === "quote") f = `<textarea data-k="text" rows="2" ${dis}>${esc(b.text ?? "")}</textarea><input data-k="cite" value="${esc(b.cite ?? "")}" placeholder="Who said it (real quotes only)" ${dis}>`;
     else if (b.type === "button") f = `<input data-k="label" value="${esc(b.label ?? "")}" ${dis}><input data-k="url" value="${esc(b.url ?? "")}" ${dis}>`;
@@ -664,16 +613,12 @@ function renderBrand() {
     </div>
     <div class="card stack"><h2>Dates & deadlines Claude can use</h2>
       <textarea id="k-dates" rows="5">${esc(Object.values(k.deadlines_2026 ?? {}).join("\n"))}</textarea><div class="small muted">One per line. Claude only uses deadlines listed here.</div></div>
-    <div class="card stack"><h2>Themes</h2><div class="theme-grid">${Object.entries(k.themes ?? {}).map(([key, t]) => `
-      <div class="theme-card" style="background:${t.bg};color:${t.text};border-color:${t.accent}"><div style="font-family:Oswald;letter-spacing:.1em;text-transform:uppercase">${esc(t.name)}</div>
-      <div style="font-family:Lora;font-style:italic;color:${t.accent2}">Handmade in Billings</div>
-      <div class="row">${["bg", "panel", "text", "accent", "accent2"].map((f) => `<label class="sw"><input type="color" data-theme="${key}" data-f="${f}" value="${t[f]}"><small>${f}</small></label>`).join("")}</div></div>`).join("")}</div></div>
+    <div class="card stack"><h2>Design</h2><p class="small">Every email uses the house template from the Black Walnut Friday email: charcoal background, Montserrat type, logo on top, green rule, white headline, tan accents, and white “Shop now” buttons under products.</p></div>
     <div class="card stack"><h2>Who we sell to</h2>${(k.personas ?? []).map((p) => `<div><b>${esc(p.name)}</b> <span class="small muted">— ${esc(p.wants)} <i>${esc(p.products)}</i></span></div>`).join("")}</div>`;
   q("#save").onclick = async () => {
     const v = (id) => q("#" + id).value.trim();
     const lines = (id) => v(id).split("\n").map((x) => x.trim()).filter(Boolean);
-    const themes = structuredClone(k.themes ?? {});
-    $root.querySelectorAll(".es input[type=color]").forEach((i) => (themes[i.dataset.theme][i.dataset.f] = i.value));
+    const themes = k.themes ?? {};
     const next = { ...k, name: v("k-name"), sender_name: v("k-sender"), address: v("k-address"), phone: v("k-phone"), logo_url: v("k-logo"), one_liner: v("k-one"), story: v("k-story"),
       voice: lines("k-voice"), never: lines("k-never"), approved_mentions: v("k-mentions"), notes_for_writer: v("k-notes"),
       deadlines_2026: Object.fromEntries(lines("k-dates").map((d, i) => ["d" + (i + 1), d])), themes };
@@ -704,7 +649,7 @@ function renderPlan() {
     <li>Default design: the dark Black Walnut Friday look. Emails come from Montana Block Co. &lt;mitchell@mtblock.com&gt;.</li>
     <li>Real dates and real stock only. No made-up reviews, scarcity or hype.</li></ul>
   <h2>How this tab works</h2>
-  <ol><li>Open an email and press <b>Write it</b>. Claude writes the copy, picks products from the live store, and draws the header graphic.</li><li>Edit anything, or tell Claude what to change and press <b>Revise</b>.</li><li><b>Email me a proof</b> to see it in a real inbox.</li><li><b>Approve</b> (Mitchell or Brittany). This locks the exact version.</li><li>Campaigns: <b>Send…</b> now or on a schedule, typing SEND to confirm. Automations: approved emails get set up in Omnisend.</li></ol>
+  <ol><li>Open an email and press <b>Write it</b>. Claude writes and proofreads the copy and picks products from the live store. It uses the Black Walnut Friday template.</li><li>Edit anything, or tell Claude what to change and press <b>Revise</b>.</li><li><b>Email me a proof</b> to see it in a real inbox.</li><li><b>Approve</b> (Mitchell or Brittany). This locks the exact version.</li><li>Campaigns: <b>Send…</b> now or on a schedule, typing SEND to confirm. Automations: approved emails get set up in Omnisend.</li></ol>
   </article>`;
 }
 

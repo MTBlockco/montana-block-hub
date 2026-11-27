@@ -1,8 +1,7 @@
 // Email Studio: Claude writes the email.
 //  action "products": live retail catalog from Shopify (titles, prices, photos, stock) for the product picker.
-//  action "generate": write a full email (subject options, preview text, blocks, hero graphic) from the brief.
+//  action "generate": write a full email (subject options, preview text, blocks) from the brief, then proofread it.
 //  action "revise":   rewrite the current draft following Mitchell's notes.
-//  action "graphic":  redraw only the hero graphic.
 // Nothing here sends anything. Drafts are saved as "draft" and still need the owner's approval.
 import { cors, json, getCaller, rank } from "./common.ts";
 
@@ -67,35 +66,32 @@ async function retailProducts() {
 }
 
 // ---------- The email format Claude fills in ----------
-const BLOCK_TYPES = ["hero", "heading", "text", "product", "products", "quote", "button", "steps", "divider", "signoff", "note"];
+const BLOCK_TYPES = ["hero", "heading", "text", "callout", "product", "products", "quote", "button", "steps", "divider", "signoff", "note"];
 const draftTool = {
   name: "email_draft",
   description: "The finished marketing email for Montana Block Co., as structured blocks the app renders into branded HTML.",
   input_schema: {
     type: "object",
-    required: ["subject_options", "subject", "preheader", "theme", "blocks", "hero_svg", "rationale"],
+    required: ["subject_options", "subject", "preheader", "blocks", "rationale"],
     properties: {
       subject_options: { type: "array", items: { type: "string" }, description: "3 distinct subject lines, under 50 characters each, no ALL CAPS, max one emoji total." },
       subject: { type: "string", description: "The recommended one of the three." },
       preheader: { type: "string", description: "Preview text, 40-90 characters, that adds to the subject instead of repeating it." },
-      theme: { type: "string", description: "Key of one of the brand kit themes." },
-      hero_svg: { type: "string", description: "The hero graphic as a complete <svg> 1200x600 (viewBox 0 0 1200 600). See graphic rules." },
-      hero_alt: { type: "string", description: "Alt text for the hero graphic, including its words." },
       blocks: {
         type: "array",
-        description: "Email body top to bottom. Start with one hero block. 5-12 blocks.",
+        description: "Email body top to bottom. Start with one hero block (the headline). 5-12 blocks.",
         items: {
           type: "object",
           required: ["type"],
           properties: {
             type: { type: "string", enum: BLOCK_TYPES },
-            text: { type: "string", description: "heading/text/quote/note: the words. text allows **bold**, *italic*, [link](url) and blank-line paragraphs." },
+            text: { type: "string", description: "heading/text/callout/quote/note/signoff: the words. Plain sentences only: no asterisks, no markdown, no emoji. Separate paragraphs with a blank line. [label](https://mtblock.com/...) links are allowed in text." },
             eyebrow: { type: "string" }, headline: { type: "string" }, sub: { type: "string" },
             handle: { type: "string", description: "product: a product handle from the catalog." },
             handles: { type: "array", items: { type: "string" }, description: "products: 2-4 handles from the catalog." },
             blurb: { type: "string", description: "product: one or two sentences on why this one." },
             label: { type: "string" }, url: { type: "string", description: "button: must be an mtblock.com link." },
-            items: { type: "array", items: { type: "string" }, description: "steps: 2-5 short items." },
+            items: { type: "array", items: { type: "string" }, description: "steps: 2-5 items, each one or two complete sentences." },
             cite: { type: "string", description: "quote: who said it. Only real, provided quotes." },
           },
         },
@@ -124,13 +120,16 @@ STRATEGY YOU FOLLOW (learned from the best small-batch, made-in-USA brands such 
 - Only feature products that are in stock (stock > 0) unless the brief says made-to-order or pre-order; if a product is made to order, say so plainly.
 - Links: only https://mtblock.com URLs (product urls from the catalog, https://mtblock.com/collections/all, or https://mtblock.com).
 
-GRAPHIC RULES (hero_svg):
-- A complete standalone SVG, width="1200" height="600" viewBox="0 0 1200 600", under 14,000 characters.
-- Use the chosen theme's colors. Montana-made, crafted, rugged-refined look: layered mountain ridgelines, wood-grain line work, end-grain checkerboard patterns, growth rings, topo contour lines, pine silhouettes, simple badge/stamp shapes, brass rule lines. Flat, clean, print-like. No gradients heavier than two stops, no filters, no <image>, no external references, no scripts, no foreignObject.
-- Type: font-family "Oswald" (uppercase, letter-spacing) for headlines and "Lora" (italic) for the accent line. Max 12 words of text in the graphic, all clearly legible on a phone (headline at least 64px). Keep text inside x 80-1120, y 60-540.
-- Do not draw logos, brand marks of other companies, people, or the Montana Block logo (the email adds the real logo).
+DESIGN: Every email uses the house template from the Black Walnut Friday email (dark charcoal, Montserrat, centered, logo on top, green rule, white headline, warm off-white body, tan accents, white square "Shop now" buttons under products). The app renders it; you only supply words and products. There is no header graphic.
 
-BLOCK GUIDE: hero (eyebrow, headline, sub = the words on/under the graphic), heading (text), text (text), product (handle, blurb), products (handles), quote (text, cite — only real provided quotes), button (label, url), steps (items), divider, note (small print like deadlines), signoff (text: a short personal sign-off from the shop crew, e.g. "— Mitchell and the crew at Montana Block").
+WRITING STANDARD (Mitchell reads every word; errors are not acceptable):
+- Complete, grammatical sentences. No sentence fragments ("Warm water, mild soap, quick scrub." is wrong; "Use warm water and a little mild soap." is right).
+- American English, correct punctuation, Oxford comma, consistent tense, no run-ons, no comma splices.
+- No asterisks, markdown, ALL CAPS words, or emoji in any text field.
+- Speak as "we" (the shop). Keep it plain and specific.
+- Before you call the tool, proofread every field line by line and fix anything that isn't clean.
+
+BLOCK GUIDE: hero (headline = the big white title, 2-6 words; sub = optional one-sentence intro under it), callout (one short tan accent line, e.g. a date or the one thing to remember), heading (text), text (text), product (handle, blurb), products (handles), quote (text, cite — only real provided quotes), button (label, url), steps (items), divider, note (small print like deadlines), signoff (text: a short personal sign-off from the shop crew, e.g. "— Mitchell and the crew at Montana Block").
 Use at most 2 buttons. Keep the whole email readable in under 60 seconds (about 120-220 words of body copy).
 
 LIVE RETAIL CATALOG (handle | title | price | stock | tags):
@@ -166,14 +165,10 @@ async function callClaude(system: string, messages: any[], apiKey: string, retry
   return { draft: tool.input, usage: out.usage ?? {} };
 }
 
-// Strip anything unsafe from the SVG before it is stored.
-function cleanSvg(svg: string) {
-  let s = String(svg || "").trim();
-  if (!s.startsWith("<svg")) s = s.slice(s.indexOf("<svg"));
-  s = s.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "")
-    .replace(/\son\w+="[^"]*"/gi, "").replace(/(href|xlink:href)="(?!#)[^"]*"/gi, "").replace(/<image[\s\S]*?>/gi, "");
-  if (!/xmlns=/.test(s)) s = s.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"');
-  return s.slice(0, 40000);
+// Second pass: a careful copyedit of the finished draft (grammar, fragments, punctuation), wording otherwise kept.
+async function proofread(system: string, draft: any, apiKey: string) {
+  const msg = `Copyedit this finished email draft before Mitchell sees it. Fix every grammar, spelling and punctuation error, every sentence fragment and every awkward phrase. Remove any asterisks or markdown. Keep the meaning, structure, products, links and tone. Return the whole corrected draft with the email_draft tool.\nDRAFT:\n${JSON.stringify(draft)}`;
+  try { return await callClaude(system, [{ role: "user", content: msg }], apiKey); } catch { return { draft, usage: {} }; }
 }
 
 function sanitizeDraft(d: any, products: any[]) {
@@ -184,6 +179,8 @@ function sanitizeDraft(d: any, products: any[]) {
     if (b.type === "products") b.handles = (b.handles ?? []).filter((h: string) => handles.has(h)).slice(0, 4);
     if (b.type === "products" && !b.handles.length) return null;
     if (b.type === "button" && !okUrl(b.url)) b.url = "https://mtblock.com/collections/all";
+    for (const k of ["text", "headline", "sub", "blurb", "label", "eyebrow"]) if (typeof b[k] === "string") b[k] = b[k].replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\*/g, "");
+    if (Array.isArray(b.items)) b.items = b.items.map((x: string) => String(x).replace(/\*\*?([^*]+)\*\*?/g, "$1").replace(/\*/g, ""));
     if (typeof b.text === "string") b.text = b.text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m: string, t: string, u: string) => okUrl(u) ? `[${t}](${u})` : t);
     return b;
   }).filter(Boolean);
@@ -192,8 +189,8 @@ function sanitizeDraft(d: any, products: any[]) {
     subject: String(d.subject ?? d.subject_options?.[0] ?? "").slice(0, 150),
     preheader: String(d.preheader ?? "").slice(0, 200),
     theme_key: String(d.theme ?? ""),
-    hero_svg: cleanSvg(d.hero_svg),
-    hero_alt: String(d.hero_alt ?? ""),
+    hero_svg: "",
+    hero_alt: "",
     blocks,
     rationale: String(d.rationale ?? ""),
   };
@@ -213,7 +210,7 @@ Deno.serve(async (req) => {
   try {
     if (action === "products") return json({ products: await retailProducts() });
 
-    if (!["generate", "revise", "graphic"].includes(action)) return json({ error: "Unknown action" }, 400);
+    if (!["generate", "revise"].includes(action)) return json({ error: "Unknown action" }, 400);
 
     const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const { count } = await service.from("mkt_ai_log").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("created_at", since);
@@ -247,23 +244,25 @@ Deno.serve(async (req) => {
     if (action === "generate") {
       userMsg = `Write this email from scratch.\nBRIEF:\n${JSON.stringify(brief, null, 1)}`;
     } else if (action === "revise") {
-      userMsg = `Here is the current draft. Revise it following Mitchell's notes, keeping everything he didn't ask to change.\nNOTES: ${notes || "(tighten and improve it)"}\nBRIEF:\n${JSON.stringify(brief, null, 1)}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, subject_options: c.subject_options, preheader: c.preheader, theme: c.theme?.key, blocks: c.blocks, hero_svg: c.hero_svg })}`;
-    } else {
-      userMsg = `Keep the subject, preheader, theme and blocks exactly as they are (return them unchanged) and draw a NEW hero_svg. ${notes ? "Direction for the graphic: " + notes : "Try a different composition than the current one."}\nHero words to use: ${JSON.stringify((c.blocks ?? []).find((b: any) => b.type === "hero") ?? {})}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, subject_options: c.subject_options, preheader: c.preheader, theme: c.theme?.key, blocks: c.blocks })}`;
+      userMsg = `Here is the current draft. Revise it following Mitchell's notes, keeping everything he didn't ask to change.\nNOTES: ${notes || "(tighten and improve it)"}\nBRIEF:\n${JSON.stringify(brief, null, 1)}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, subject_options: c.subject_options, preheader: c.preheader, blocks: c.blocks })}`;
+
     }
 
-    const { draft, usage } = await callClaude(system, [{ role: "user", content: userMsg }], apiKey);
+    const first = await callClaude(system, [{ role: "user", content: userMsg }], apiKey);
+    const second = await proofread(system, first.draft, apiKey);
+    const draft = second.draft, usage = {
+      input_tokens: (first.usage.input_tokens ?? 0) + (second.usage.input_tokens ?? 0) + (first.usage.cache_read_input_tokens ?? 0) + (second.usage.cache_read_input_tokens ?? 0) + (first.usage.cache_creation_input_tokens ?? 0) + (second.usage.cache_creation_input_tokens ?? 0),
+      output_tokens: (first.usage.output_tokens ?? 0) + (second.usage.output_tokens ?? 0) };
     const d = sanitizeDraft(draft, products);
-    const themes = kit.themes ?? {};
-    const themeKey = themes[d.theme_key] ? d.theme_key : (c.theme?.key && themes[c.theme.key] ? c.theme.key : Object.keys(themes)[0]);
+    const themeKey = kit.default_theme || "black_walnut";
 
     await service.from("mkt_ai_log").insert({
       user_id: user.id, campaign_id: id, action, model: MODEL,
-      input_tokens: (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0),
+      input_tokens: usage.input_tokens ?? 0,
       output_tokens: usage.output_tokens ?? 0,
     });
 
-    // Return the draft to the app; the app renders the HTML and graphic, then saves it as a draft.
+    // Return the draft to the app; the app renders the HTML in the house template, then saves it as a draft.
     const used = products.filter((p) => d.blocks.some((b: any) => b.handle === p.handle || (b.handles ?? []).includes(p.handle)));
     return json({ draft: { ...d, theme_key: themeKey }, products: used });
   } catch (e) {
