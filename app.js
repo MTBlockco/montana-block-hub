@@ -1228,6 +1228,18 @@ function printBuildList(L, assign) {
   log("print_build_list", "order", null, { kind, products: rows.length, orders: orders.length });
 }
 
+// Mark a Shopify order fulfilled from the hub (the customer is NOT emailed) and finish its jobs. Returns true when done.
+async function fulfillInShopify(orderId, name) {
+  if (!confirm(`Mark ${name} as fulfilled in Shopify?\n\nThe customer is NOT emailed. This also completes its jobs here.`)) return false;
+  toast("Updating Shopify…");
+  const r = await fnCall("shopify-inventory", { action: "fulfill_order", order_id: orderId });
+  if (r?.error) { toast(r.error); return false; }
+  state.cache.openOrders = null;
+  log("fulfill_order", "order", null, { order: name, jobs: r.jobs });
+  toast(r.alreadyFulfilled ? `${name} was already fulfilled in Shopify. Jobs completed.` : `${name} marked fulfilled in Shopify.`);
+  return true;
+}
+
 // One Shopify order: what's on it, what's on the shelf, who's on it and where it's at. No prices.
 const ORDER_STATUSES = ["Not started", "In progress", "Ready to ship"];
 function viewOrder(o, a, wholesale, done) {
@@ -1261,6 +1273,7 @@ function viewOrder(o, a, wholesale, done) {
       <label class="btn sm" style="cursor:pointer">+ Add photo<input type="file" accept="image/*" multiple id="ophoto" hidden></label></div>
     <div id="ophotos"><p class="small muted" style="margin:0">Loading photos…</p></div>
     <div class="row wrap section">
+      ${can("lead") || OFFICE ? '<button class="btn primary" id="ofulfill">✅ Mark complete (fulfill in Shopify)</button>' : ""}
       ${can("lead") && !OFFICE ? '<button class="btn" id="ojob">+ Job from this order</button>' : ""}
       ${can("admin") ? `<a class="btn" href="https://admin.shopify.com/store/brittany-316/orders/${esc(numericId)}" target="_blank" rel="noopener">Open in Shopify ↗</a>` : ""}
     </div>
@@ -1297,6 +1310,9 @@ function viewOrder(o, a, wholesale, done) {
       log("order_status", "order", null, { order: o.name, status: b.dataset.s });
       toast(`${o.name}: ${b.dataset.s}`); close(); done?.();
     }));
+    root.querySelector("#ofulfill")?.addEventListener("click", async () => {
+      if (await fulfillInShopify(o.id, o.name)) { close(); done?.(); }
+    });
     root.querySelector("#ojob")?.addEventListener("click", () => {
       close();
       const lines = o.lines.map((l) => `${l.qty} × ${l.title}${l.variant ? ` (${l.variant})` : ""}`).join("\n");
@@ -1951,7 +1967,9 @@ async function viewJob(j, done) {
       // Complete job = every step finished: bring each step's count up to the job quantity.
       const behind = (steps ?? []).filter((st) => Number(st.done_qty ?? 0) < Number(j.quantity));
       if (behind.length) await sb.from("job_steps").update({ done_qty: j.quantity }).eq("job_id", j.id).lt("done_qty", j.quantity);
-      log("update_job", "job", j.id, { to: "Complete" }); toast("Job complete. Moved to COMPLETE."); close(); done?.();
+      log("update_job", "job", j.id, { to: "Complete" }); toast("Job complete. Moved to COMPLETE.");
+      if (j.shopify_order_id && (can("lead") || OFFICE)) await fulfillInShopify(j.shopify_order_id, j.title);
+      close(); done?.();
     });
     root.querySelector("#reopen")?.addEventListener("click", async () => {
       await sb.from("jobs").update({ status: "Active", completed_at: null }).eq("id", j.id); close(); done?.();

@@ -147,6 +147,35 @@ async function openOrders() {
   return out;
 }
 
+
+// Mark a Shopify order fulfilled (everything still waiting to ship) WITHOUT emailing the customer, then complete any hub jobs linked to it.
+async function fulfillOrder(service: ReturnType<typeof createClient>, orderId: string, userId: string) {
+  if (!/^gid:\/\/shopify\/Order\/\d+$/.test(orderId)) throw new Error("Bad order id");
+  const d = await gql(`query($id: ID!) { order(id: $id) { id name displayFulfillmentStatus
+    fulfillmentOrders(first: 25) { nodes { id status } } } }`, { id: orderId });
+  const o = d.order;
+  if (!o) throw new Error("Order not found in Shopify");
+  const open = (o.fulfillmentOrders?.nodes ?? []).filter((f: any) => ["OPEN", "IN_PROGRESS"].includes(f.status));
+  let fulfilled = false;
+  if (open.length) {
+    const res = await gql(`mutation($f: FulfillmentInput!) { fulfillmentCreate(fulfillment: $f) { fulfillment { id status } userErrors { field message } } }`, {
+      f: { notifyCustomer: false, lineItemsByFulfillmentOrder: open.map((f: any) => ({ fulfillmentOrderId: f.id })) },
+    });
+    const errs = res.fulfillmentCreate.userErrors;
+    if (errs?.length) throw new Error(errs.map((e: { message: string }) => e.message).join("; "));
+    fulfilled = true;
+  } else if ((o.fulfillmentOrders?.nodes ?? []).some((f: any) => f.status === "ON_HOLD")) {
+    throw new Error(`${o.name} is on hold in Shopify. Release the hold in Shopify first.`);
+  }
+  // Complete linked hub jobs (the database trigger finishes their steps).
+  const now = new Date().toISOString();
+  const { data: jobs } = await service.from("jobs").select("id, quantity, shipped_qty").eq("shopify_order_id", orderId).neq("status", "Complete");
+  for (const j of jobs ?? []) await service.from("jobs").update({ status: "Complete", completed_at: now, shipped_qty: j.shipped_qty ?? j.quantity }).eq("id", j.id);
+  await service.from("order_assignments").delete().eq("shopify_order_id", orderId);
+  await service.from("activity_log").insert({ user_id: userId, action: "fulfill_order", entity: "order", detail: { order: o.name, shopify: true, jobs: (jobs ?? []).length, alreadyFulfilled: !fulfilled } });
+  return { name: o.name, fulfilled, alreadyFulfilled: !fulfilled, jobs: (jobs ?? []).length };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "POST only" }, 405);
@@ -180,6 +209,11 @@ Deno.serve(async (req) => {
         }
         return json({ ok: true, orders });
       } catch (e) { return json({ error: (e as Error).message }, 502); }
+    }
+    // Mark an order fulfilled in Shopify (no customer email) and finish its hub jobs: leads and up, plus the shipping-room computer.
+    if (body.action === "fulfill_order" && p?.active && (["lead", "admin", "owner"].includes(p.role) || (user.email ?? "").toLowerCase() === "office@mtblock.com")) {
+      try { return json({ ok: true, ...(await fulfillOrder(service, String(body.order_id ?? ""), user.id)) }); }
+      catch (e) { return json({ error: (e as Error).message }, 502); }
     }
     if (!p || !p.active || !(p.role === "owner" || p.can_edit_inventory)) {
       return json({ error: "Only people Mitchell has given inventory access can change inventory." }, 403);
