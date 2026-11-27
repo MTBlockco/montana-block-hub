@@ -284,7 +284,7 @@ async function renderEditor(id) {
   if (error || !c) { openId = null; view().innerHTML = `<p>Couldn't find that email.</p>`; return; }
   ed = { c, events: events ?? [], device: ed?.c?.id === id ? ed.device : "desktop", busy: false, products: c.brief?._products ?? {} };
   paintEditor();
-  getCatalog().then(() => { if (ed?.c.id === id) paintBlocks(); }).catch(() => {});
+
 }
 
 const frozen = () => ["scheduled", "sending", "sent"].includes(ed.c.status);
@@ -292,90 +292,58 @@ const q = (sel) => $root.querySelector(sel);
 
 function paintEditor() {
   const c = ed.c;
-  const themes = kit.themes ?? {};
-  const personas = kit.personas ?? [];
   frame(c.kind === "flow" ? "Automation email" : "Email", `<button class="btn sm" id="back">← Back</button>`);
   q("#back").onclick = () => { openId = null; ed = null; if (c.kind === "flow" && sub === "today") sub = "flows"; paint(); };
   const dis = frozen() ? "disabled" : "";
+  const when = c.kind === "flow" ? (c.brief?.when ?? [c.brief?.delay, c.brief?.trigger].filter((x) => x && x !== "—").join(" after: ")) : "";
+  const critiques = ed.events.filter((e) => e.action === "critique").slice(0, 3);
   view().innerHTML = `
-  <div class="statusbar">${badge(c.status)}
-    ${c.approved_at ? `<span class="small muted">Approved ${esc(fmtDate(c.approved_at))}</span>` : ""}
-    ${c.send_at ? `<span class="small muted">${c.status === "scheduled" ? "Goes out" : "Sent"} ${esc(fmtDate(c.send_at))}</span>` : ""}
-    <span class="spacer"></span><span class="small muted" id="savestate"></span></div>
+  <div class="statusbar">${badge(c.status)}<b>${esc(c.title)}</b><span class="spacer"></span><span class="small muted" id="savestate"></span></div>
   <div class="editor">
     <div class="col-left">
       <div class="card stack">
-        <h2>Brief</h2>
-        <div><label>Name</label><input id="f-title" value="${esc(c.title)}" ${dis}></div>
-        <div><label>What this email should do</label><textarea id="f-goal" rows="3" ${dis}>${esc(c.goal ?? "")}</textarea></div>
-        <div class="row2">
-          ${c.kind === "campaign" ? `<div><label>Send date (Mountain)</label><input id="f-date" type="datetime-local" value="${toLocalInput(c.planned_at)}" ${dis}></div>` : `<div><label>Trigger</label><input disabled value="${esc((c.brief?.trigger ?? "") + " · " + (c.brief?.delay ?? ""))}"></div>`}
-          <div><label>Who it's for</label><select id="f-persona" ${dis}><option value="all">Everyone</option>${personas.map((p) => `<option value="${p.key}" ${c.persona === p.key ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>
-        </div>
-        <div class="small muted">Design: the house template from the Black Walnut Friday email.</div>
-        <div><label>Notes for Claude (optional)</label><textarea id="f-notes" rows="3" placeholder="e.g. Lead with the walnut Colossus. Mention we have 3 left. Keep it under 150 words." ${dis}></textarea></div>
-        <div class="row wrap">
-          <button class="btn primary" id="b-gen" ${dis}>${c.html ? "Rewrite from scratch" : "✍ Write it"}</button>
-          ${c.html ? `<button class="btn" id="b-rev" ${dis}>Revise with my notes</button>` : ""}
-        </div>
-        ${c.brief?.rationale ? `<div class="small rationale"><b>Why this angle:</b> ${esc(c.brief.rationale)}</div>` : ""}
-        ${c.brief?.needs_from_mitchell ? `<div class="small warn">Needs from you: ${esc(c.brief.needs_from_mitchell)}</div>` : ""}
+        <h2>What the email should say</h2>
+        <textarea id="f-goal" rows="7" placeholder="Tell Claude what this email is for and what it should say." ${dis}>${esc(c.goal ?? "")}</textarea>
+        ${c.kind === "campaign"
+          ? `<div><label>When it sends (Mountain)</label><input id="f-date" type="datetime-local" value="${toLocalInput(c.planned_at)}" ${dis}></div>`
+          : `<div><label>When it sends</label><input id="f-when" value="${esc(when)}" placeholder="e.g. 20 days after any order" ${dis}></div>`}
+        <button class="btn ${c.html ? "" : "primary"}" id="b-gen" ${dis}>${c.html ? "Start over from this" : "✍ Write it"}</button>
       </div>
       ${c.html ? `<div class="card stack">
-        <h2>Subject & preview</h2>
-        ${(c.subject_options ?? []).length ? `<div class="subjects">${c.subject_options.map((s) => `<button class="subj-opt ${s === c.subject ? "on" : ""}" ${dis}>${esc(s)}</button>`).join("")}</div>` : ""}
-        <div><label>Subject line <span class="muted" id="subjlen"></span></label><input id="f-subject" value="${esc(c.subject ?? "")}" ${dis}></div>
-        <div><label>Preview text</label><input id="f-pre" value="${esc(c.preheader ?? "")}" ${dis}></div>
-        <div><label>Audience</label><select id="f-aud" ${dis}></select><div class="small muted" id="audnote"></div></div>
-      </div>
-      <div class="card stack"><h2>Content</h2><div id="blocks"></div>
-        <div class="row wrap"><select id="addtype" ${dis}><option value="">+ Add a block…</option>${["heading", "text", "callout", "product", "products", "button", "steps", "quote", "note", "divider", "signoff"].map((t) => `<option>${t}</option>`).join("")}</select></div>
+        <h2>Critiques</h2>
+        <textarea id="f-crit" rows="6" placeholder="What should change? e.g. Use the care instructions from our website. Shorter. Mention the knife stands." ${dis}></textarea>
+        <button class="btn primary" id="b-rev" ${dis}>Revise</button>
+        ${critiques.length ? `<div class="small muted">Your recent critiques:</div>${critiques.map((e) => `<div class="small hist"><span>${esc(fmtDate(e.at, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}</span>${esc(e.detail?.text ?? "")}</div>`).join("")}` : ""}
       </div>` : ""}
-      <div class="card stack"><h2>History</h2><div class="small">${ed.events.map((e) => `<div class="hist"><span>${esc(fmtDate(e.at))}</span> ${esc(e.action.replace(/_/g, " "))}${e.detail?.to ? " → " + esc(e.detail.to.join(", ")) : ""}${e.detail?.error ? ` <span class="bad">${esc(e.detail.error)}</span>` : ""}</div>`).join("") || "No activity yet."}</div></div>
     </div>
     <div class="col-right">
-      <div class="preview-head"><div class="seg"><button data-dev="desktop" class="${ed.device === "desktop" ? "on" : ""}">Desktop</button><button data-dev="mobile" class="${ed.device === "mobile" ? "on" : ""}">Phone</button></div>
-        </div>
+      <div class="preview-head"><div class="seg"><button data-dev="desktop" class="${ed.device === "desktop" ? "on" : ""}">Desktop</button><button data-dev="mobile" class="${ed.device === "mobile" ? "on" : ""}">Phone</button></div></div>
       ${c.html ? `<div class="inbox"><div class="from">${esc(kit.sender_name || "Montana Block Co.")}</div><div class="isubj">${esc(c.subject ?? "")}</div><div class="ipre">${esc(c.preheader ?? "")}</div></div>` : ""}
-      <div class="frame ${ed.device}">${c.html ? `<iframe id="pv" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview"></iframe>` : `<div class="empty">No draft yet.<br>Fill in the brief and press <b>Write it</b>. Claude writes the copy and picks products from the live store; it lands in the Black Walnut Friday template.</div>`}</div>
+      <div class="frame ${ed.device}">${c.html ? `<iframe id="pv" sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview"></iframe>` : `<div class="empty">No draft yet.<br>Tell Claude what the email should say and press <b>Write it</b>.</div>`}</div>
       <div class="card stack approve-box" id="approvebox"></div>
     </div>
   </div>`;
   if (c.html) q("#pv").srcdoc = c.html;
   wireEditor();
-  paintBlocks();
   paintApproveBox();
-  paintAudience();
 }
 
 function wireEditor() {
   const c = ed.c;
-  const onMeta = (id, field, conv = (x) => x) => q("#" + id)?.addEventListener("change", (e) => { c[field] = conv(e.target.value); save({ [field]: c[field] }); });
-  onMeta("f-title", "title");
-  onMeta("f-goal", "goal");
-  onMeta("f-date", "planned_at", fromLocalInput);
-  onMeta("f-persona", "persona");
-  $root.querySelectorAll(".subj-opt").forEach((b) => (b.onclick = async () => { c.subject = b.textContent; await rerender(); paintEditor(); }));
-  const subj = q("#f-subject");
-  if (subj) {
-    const len = () => (q("#subjlen").textContent = `(${subj.value.length} chars${subj.value.length > 50 ? " – long for phones" : ""})`);
-    len(); subj.oninput = len;
-    subj.onchange = () => { c.subject = subj.value; rerender(); };
-    q("#f-pre").onchange = (e) => { c.preheader = e.target.value; rerender(); };
-  }
+  q("#f-goal")?.addEventListener("change", (e) => { c.goal = e.target.value; save({ goal: c.goal }); });
+  q("#f-date")?.addEventListener("change", (e) => { c.planned_at = fromLocalInput(e.target.value); save({ planned_at: c.planned_at }); });
+  q("#f-when")?.addEventListener("change", (e) => { c.brief = { ...(c.brief ?? {}), when: e.target.value, trigger: e.target.value, delay: "" }; save({ brief: c.brief }); });
   $root.querySelectorAll("[data-dev]").forEach((b) => (b.onclick = () => {
     ed.device = b.dataset.dev; q(".frame").className = "frame " + ed.device;
     $root.querySelectorAll("[data-dev]").forEach((x) => x.classList.toggle("on", x === b));
   }));
-  q("#b-gen")?.addEventListener("click", () => write("generate"));
-  q("#b-rev")?.addEventListener("click", () => write("revise"));
-  q("#addtype")?.addEventListener("change", (e) => {
-    const t = e.target.value; e.target.value = ""; if (!t) return;
-    const blank = { callout: { text: "Order by Dec 14" }, heading: { text: "Heading" }, text: { text: "Write something here." }, product: { handle: Object.keys(catalog ?? {})[0] ?? "", blurb: "" }, products: { handles: Object.keys(catalog ?? {}).slice(0, 2) }, button: { label: "Shop now", url: "https://mtblock.com/collections/all" }, steps: { items: ["Step one", "Step two"] }, quote: { text: "", cite: "" }, note: { text: "" }, divider: {}, signoff: { text: "— Mitchell and the crew at Montana Block" } }[t];
-    for (const h of [blank.handle, ...(blank.handles ?? [])]) if (h && catalog?.[h]) ed.products[h] = catalog[h];
-    const i = c.blocks.length - (c.blocks.at(-1)?.type === "signoff" ? 1 : 0);
-    c.blocks.splice(i, 0, { type: t, ...blank });
-    rerender(); paintBlocks();
+  q("#b-gen")?.addEventListener("click", async () => {
+    const g = q("#f-goal")?.value ?? ""; if (g !== c.goal) { c.goal = g; await save({ goal: g }); }
+    write("generate");
+  });
+  q("#b-rev")?.addEventListener("click", () => {
+    if (!(q("#f-crit")?.value ?? "").trim()) return toast("Write what you want changed first.");
+    write("revise");
   });
 }
 
@@ -411,10 +379,10 @@ async function write(action) {
   if (!guard() || ed.busy) return;
   const c = ed.c;
   if (c.status === "approved" && !confirm("This email is approved. Rewriting it cancels the approval. Continue?")) return;
-  const notes = q("#f-notes")?.value ?? "";
+  const notes = action === "revise" ? (q("#f-crit")?.value ?? "") : "";
   ed.busy = true;
-  const btns = $root.querySelectorAll("#b-gen,#b-rev,#b-art"); btns.forEach((b) => (b.disabled = true));
-  const label = { generate: "Claude is writing and proofreading the email… (about a minute)", revise: "Claude is revising and proofreading…" }[action];
+  const btns = $root.querySelectorAll("#b-gen,#b-rev"); btns.forEach((b) => (b.disabled = true));
+  const label = { generate: "Claude is writing and proofreading the email… (about a minute)", revise: "Claude is making your changes and proofreading… (about a minute)" }[action];
   q(".frame").insertAdjacentHTML("afterbegin", `<div class="working"><div class="spinner"></div>${label}</div>`);
   try {
     if (c.status === "approved") { await H.sb.rpc("mkt_unapprove", { p_id: c.id }); c.status = "draft"; }

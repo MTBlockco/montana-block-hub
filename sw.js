@@ -1,6 +1,6 @@
 // Service worker: makes the hub installable and keeps the app shell available offline.
 // Data always comes live from the server; only the static files are cached.
-const CACHE = "mb-hub-v92";
+const CACHE = "mb-hub-v93";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "sayings.js", "email-studio.js", "email-render.js", "email-studio.css", "manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

@@ -1,6 +1,6 @@
 // Email Studio: Claude writes the email.
 //  action "products": live retail catalog from Shopify (titles, prices, photos, stock) for the product picker.
-//  action "generate": write a full email (subject options, preview text, blocks) from the brief, then proofread it.
+//  action "generate": write a full email (subject, preview text, blocks) from the brief, then proofread it.
 //  action "revise":   rewrite the current draft following Mitchell's notes.
 // Nothing here sends anything. Drafts are saved as "draft" and still need the owner's approval.
 import { cors, json, getCaller, rank } from "./common.ts";
@@ -65,6 +65,19 @@ async function retailProducts() {
   return rows;
 }
 
+// The store's own pages (care instructions, warranty, story, engraving...) so emails match what the site says.
+let pagesCache: { at: number; text: string } | null = null;
+async function sitePages() {
+  if (pagesCache && Date.now() - pagesCache.at < 10 * 60 * 1000) return pagesCache.text;
+  const data: any = await gql(`{ pages(first: 50) { nodes { title handle isPublished body } } }`);
+  const strip = (h: string) => String(h || "").replace(/<(br|\/p|\/li|\/h\d|\/div)[^>]*>/gi, "\n").replace(/<li[^>]*>/gi, "- ").replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&#39;|&rsquo;/g, "'").replace(/&quot;|&ldquo;|&rdquo;/g, '"').replace(/[ \t]+/g, " ").replace(/\n\s*\n+/g, "\n").trim();
+  const text = (data.pages.nodes ?? []).filter((p: any) => p.isPublished && p.body)
+    .map((p: any) => `=== ${p.title} (https://mtblock.com/pages/${p.handle}) ===\n${strip(p.body).slice(0, 6000)}`).join("\n\n");
+  pagesCache = { at: Date.now(), text };
+  return text;
+}
+
 // ---------- The email format Claude fills in ----------
 const BLOCK_TYPES = ["hero", "heading", "text", "callout", "product", "products", "quote", "button", "steps", "divider", "signoff", "note"];
 const draftTool = {
@@ -72,10 +85,9 @@ const draftTool = {
   description: "The finished marketing email for Montana Block Co., as structured blocks the app renders into branded HTML.",
   input_schema: {
     type: "object",
-    required: ["subject_options", "subject", "preheader", "blocks", "rationale"],
+    required: ["subject", "preheader", "blocks", "rationale"],
     properties: {
-      subject_options: { type: "array", items: { type: "string" }, description: "3 distinct subject lines, under 50 characters each, no ALL CAPS, max one emoji total." },
-      subject: { type: "string", description: "The recommended one of the three." },
+      subject: { type: "string", description: "The subject line: under 50 characters, no ALL CAPS, no emoji." },
       preheader: { type: "string", description: "Preview text, 40-90 characters, that adds to the subject instead of repeating it." },
       blocks: {
         type: "array",
@@ -101,7 +113,7 @@ const draftTool = {
   },
 };
 
-function systemPrompt(kit: any, products: any[], recent: any[]) {
+function systemPrompt(kit: any, products: any[], recent: any[], pages: string) {
   const today = new Date().toLocaleDateString("en-US", { timeZone: "America/Denver", dateStyle: "full" });
   return `You are the email marketing director for Montana Block Co. (Montana Block LLC), a solid hardwood shop in Billings, Montana that handcrafts end grain butcher blocks, cutting, carving and serving boards, magnetic knife holders and custom pieces. Today is ${today}.
 
@@ -131,6 +143,9 @@ WRITING STANDARD (Mitchell reads every word; errors are not acceptable):
 
 BLOCK GUIDE: hero (headline = the big white title, 2-6 words; sub = optional one-sentence intro under it), callout (one short tan accent line, e.g. a date or the one thing to remember), heading (text), text (text), product (handle, blurb), products (handles), quote (text, cite — only real provided quotes), button (label, url), steps (items), divider, note (small print like deadlines), signoff (text: a short personal sign-off from the shop crew, e.g. "— Mitchell and the crew at Montana Block").
 Use at most 2 buttons. Keep the whole email readable in under 60 seconds (about 120-220 words of body copy).
+
+MTBLOCK.COM PAGES (the website's own words; when an email covers care, warranty, engraving, the story or the process, follow these pages exactly and don't contradict them. Exceptions: the brand kit overrides them where they conflict, e.g. we no longer sell or recommend Bumblechutes; we make our own board wax):
+${pages}
 
 LIVE RETAIL CATALOG (handle | title | price | stock | tags):
 ${products.map((p) => `${p.handle} | ${p.title} | $${p.price}${p.price_max > p.price ? "-" + p.price_max : ""} | stock ${p.stock} | ${p.tags.join(", ")}`).join("\n")}
@@ -167,7 +182,7 @@ async function callClaude(system: string, messages: any[], apiKey: string, retry
 
 // Second pass: a careful copyedit of the finished draft (grammar, fragments, punctuation), wording otherwise kept.
 async function proofread(system: string, draft: any, apiKey: string) {
-  const msg = `Copyedit this finished email draft before Mitchell sees it. Fix every grammar, spelling and punctuation error, every sentence fragment and every awkward phrase. Remove any asterisks or markdown. Keep the meaning, structure, products, links and tone. Return the whole corrected draft with the email_draft tool.\nDRAFT:\n${JSON.stringify(draft)}`;
+  const msg = `Copyedit this finished email draft before Mitchell sees it. Do not change any facts, instructions or content choices; only fix the language. Fix every grammar, spelling and punctuation error, every sentence fragment and every awkward phrase. Remove any asterisks or markdown. Keep the meaning, structure, products, links and tone. Return the whole corrected draft with the email_draft tool.\nDRAFT:\n${JSON.stringify(draft)}`;
   try { return await callClaude(system, [{ role: "user", content: msg }], apiKey); } catch { return { draft, usage: {} }; }
 }
 
@@ -185,8 +200,8 @@ function sanitizeDraft(d: any, products: any[]) {
     return b;
   }).filter(Boolean);
   return {
-    subject_options: (d.subject_options ?? []).map(String).slice(0, 3),
-    subject: String(d.subject ?? d.subject_options?.[0] ?? "").slice(0, 150),
+    subject_options: [],
+    subject: String(d.subject ?? "").slice(0, 150),
     preheader: String(d.preheader ?? "").slice(0, 200),
     theme_key: String(d.theme ?? ""),
     hero_svg: "",
@@ -226,13 +241,14 @@ Deno.serve(async (req) => {
       return json({ error: "This email is approved or sent. Duplicate it to write a new version." }, 409);
     }
 
-    const [{ data: brand }, products, { data: recent }] = await Promise.all([
+    const [{ data: brand }, products, { data: recent }, pages] = await Promise.all([
       userClient.from("mkt_brand").select("kit").eq("id", 1).single(),
       retailProducts(),
       userClient.from("mkt_campaigns").select("title, subject, planned_at").neq("id", id).not("subject", "is", null).order("planned_at", { ascending: false }).limit(12),
+      sitePages().catch(() => ""),
     ]);
     const kit = brand?.kit ?? {};
-    const system = systemPrompt(kit, products, recent ?? []);
+    const system = systemPrompt(kit, products, recent ?? [], pages);
 
     const brief = {
       title: c.title, kind: c.kind, flow: c.flow_name ? `${c.flow_name} email #${c.flow_step ?? 1}` : null,
@@ -242,9 +258,9 @@ Deno.serve(async (req) => {
     const notes = String(body.instructions ?? "").slice(0, 3000);
     let userMsg: string;
     if (action === "generate") {
-      userMsg = `Write this email from scratch.\nBRIEF:\n${JSON.stringify(brief, null, 1)}`;
+      userMsg = `Write this email from scratch.${notes ? `\nMITCHELL'S INSTRUCTIONS (follow every one of these exactly; they override anything else in the brief):\n${notes}` : ""}\nBRIEF:\n${JSON.stringify(brief, null, 1)}`;
     } else if (action === "revise") {
-      userMsg = `Here is the current draft. Revise it following Mitchell's notes, keeping everything he didn't ask to change.\nNOTES: ${notes || "(tighten and improve it)"}\nBRIEF:\n${JSON.stringify(brief, null, 1)}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, subject_options: c.subject_options, preheader: c.preheader, blocks: c.blocks })}`;
+      userMsg = `Mitchell reviewed the current draft and wrote the critique below. Apply EVERY point in it exactly as he says, even if that means rewriting most of the email. His critique overrides the brief and your earlier choices. If he points you to something on the website, use the MTBLOCK.COM PAGES above. Then give the rest a quick polish.\nMITCHELL'S CRITIQUE:\n${notes || "(tighten and improve it)"}\nBRIEF:\n${JSON.stringify(brief, null, 1)}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, preheader: c.preheader, blocks: c.blocks })}`;
 
     }
 
@@ -256,6 +272,7 @@ Deno.serve(async (req) => {
     const d = sanitizeDraft(draft, products);
     const themeKey = kit.default_theme || "black_walnut";
 
+    if (notes) await service.from("mkt_events").insert({ campaign_id: id, actor: user.id, action: action === "revise" ? "critique" : "instructions", detail: { text: notes } });
     await service.from("mkt_ai_log").insert({
       user_id: user.id, campaign_id: id, action, model: MODEL,
       input_tokens: usage.input_tokens ?? 0,
