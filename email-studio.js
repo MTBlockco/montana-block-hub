@@ -163,6 +163,22 @@ async function renderToday() {
   wireOpen(view());
 }
 
+// Preview of a live Omnisend email (a copy of its design, captured from Omnisend's editor).
+async function previewOmni(id, a) {
+  const { data } = await H.sb.from("mkt_omni_previews").select("html, subject, captured_at").eq("omni_id", id).single();
+  if (!data) return toast("No preview copy yet.");
+  let device = "desktop";
+  const m = modal(`<div class="row between"><h2 style="margin:0">${esc(a?.name ?? "Email")}</h2><button class="btn sm" id="x">Close</button></div>
+    <div class="small muted">Subject: “${esc(a?.emails?.[0]?.subject ?? data.subject ?? "")}” · Sends ${esc(a ? autoWhen(a) : "")}</div>
+    <div class="seg" style="align-self:flex-start"><button data-d="desktop" class="on">Desktop</button><button data-d="mobile">Phone</button></div>
+    <div class="frame desktop" id="pvf"><iframe sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview" style="height:70vh"></iframe></div>
+    <div class="small muted">Copy of the live email in Omnisend as of ${esc(fmtDate(data.captured_at))}. Product blocks fill in with each customer's items when it sends.</div>`);
+  m.classList.add("es"); m.querySelector(".es-modal-card").style.maxWidth = "720px";
+  m.querySelector("iframe").srcdoc = data.html;
+  m.querySelector("#x").onclick = () => m.remove();
+  m.querySelectorAll("[data-d]").forEach((b) => (b.onclick = () => { device = b.dataset.d; m.querySelector("#pvf").className = "frame " + device; m.querySelectorAll("[data-d]").forEach((x) => x.classList.toggle("on", x === b)); }));
+}
+
 // ---------------------------------------------------------------- Calendar (ours + Omnisend's)
 async function renderCalendar() {
   frame("Email calendar", `<button class="btn primary sm" id="new">+ New email</button>`);
@@ -193,20 +209,23 @@ function autoWhen(a) {
 }
 async function renderFlows() {
   frame("Automations");
-  const [list, lib] = await Promise.all([loadCampaigns("flow"), getLibrary()]);
+  const [list, lib, { data: pv }] = await Promise.all([loadCampaigns("flow"), getLibrary(), H.sb.from("mkt_omni_previews").select("omni_id, captured_at")]);
   const live = (lib.automations ?? []);
+  const hasPv = Object.fromEntries((pv ?? []).map((x) => [x.omni_id, x.captured_at]));
   view().innerHTML = `
     <section><h2>Live in Omnisend <span class="count">${live.filter((a) => a.enabled).length}</span></h2>
-      ${live.map((a) => `<a class="ecard ext" href="${esc(a.url)}" target="_blank" rel="noopener">
+      ${live.map((a) => `<div class="ecard ext" ${hasPv[a.id] ? `data-pv="${esc(a.id)}" style="cursor:pointer"` : ""}>
         <div class="swatch" style="background:#0f0d0c;border-color:#c79a62"><span class="small" style="color:#c79a62">${a.enabled ? "LIVE" : "OFF"}</span></div>
         <div class="ebody"><div class="row between"><b>${esc(a.name)}</b><span class="sbadge ${a.enabled ? "s-approved" : "s-rejected"}">${a.enabled ? "Live" : "Off"}</span></div>
-          <div class="small muted">Sends ${esc(autoWhen(a))} · ${a.emails.length} email${a.emails.length === 1 ? "" : "s"} · edit in Omnisend ↗</div>
-          ${a.emails.map((e) => `<div class="small subj">“${esc(e.subject)}”</div>`).join("")}</div></a>`).join("") || `<p class="small muted">${lib.connected ? "No automations yet." : "Connect Omnisend in Settings."}</p>`}
+          <div class="small muted">Sends ${esc(autoWhen(a))} · ${a.emails.length} email${a.emails.length === 1 ? "" : "s"}</div>
+          ${a.emails.map((e) => `<div class="small subj">“${esc(e.subject)}”</div>`).join("")}
+          <div class="row wrap" style="margin-top:6px">${hasPv[a.id] ? `<button class="btn sm primary" data-pv="${esc(a.id)}">Preview</button>` : `<span class="small muted">No preview copy yet</span>`}<a class="btn sm" href="${esc(a.url)}" target="_blank" rel="noopener">Edit in Omnisend ↗</a></div></div></div>`).join("") || `<p class="small muted">${lib.connected ? "No automations yet." : "Connect Omnisend in Settings."}</p>`}
     </section>
     <section><h2>Approved to build <span class="count">${list.length}</span></h2>
       <div class="card small">Claude writes these here. Once you approve one, it gets set up in Omnisend and moves to the list above.</div>
       ${list.map(card).join("") || `<p class="small muted">Nothing waiting.</p>`}</section>`;
   wireOpen(view());
+  view().querySelectorAll("[data-pv]").forEach((el) => (el.onclick = (e) => { if (e.target.closest("a")) return; e.stopPropagation(); previewOmni(el.dataset.pv, live.find((x) => x.id === el.dataset.pv)); }));
 }
 
 // ---------------------------------------------------------------- Results
