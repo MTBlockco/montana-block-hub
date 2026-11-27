@@ -416,6 +416,10 @@ async function write(action) {
     const r = await fn("mkt-generate", { action, id: c.id, instructions: notes });
     const d = r.draft;
     for (const p of r.products ?? []) ed.products[p.handle] = p;
+    if (action === "fromtext") { // keep unchanged small print styled as small print
+      const notesText = new Set((c.blocks ?? []).filter((b) => b.type === "note").map((b) => (b.text ?? "").trim()));
+      d.blocks = d.blocks.map((b) => (b.type === "text" && notesText.has((b.text ?? "").trim()) ? { ...b, type: "note" } : b));
+    }
     c.subject_options = d.subject_options; c.subject = d.subject; c.preheader = d.preheader; c.blocks = d.blocks;
     c.theme = { key: kit.default_theme || "black_walnut" };
     c.hero_svg = null; c.hero_url = null;
