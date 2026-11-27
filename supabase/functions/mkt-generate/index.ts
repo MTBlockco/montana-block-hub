@@ -2,6 +2,7 @@
 //  action "products": live retail catalog from Shopify (titles, prices, photos, stock) for the product picker.
 //  action "generate": write a full email (subject, preview text, blocks) from the brief, then proofread it.
 //  action "revise":   rewrite the current draft following Mitchell's notes.
+//  action "fromtext": Mitchell edited the whole email as plain text; rebuild the layout from his exact words.
 // Nothing here sends anything. Drafts are saved as "draft" and still need the owner's approval.
 import { cors, json, getCaller, rank } from "./common.ts";
 
@@ -225,7 +226,7 @@ Deno.serve(async (req) => {
   try {
     if (action === "products") return json({ products: await retailProducts() });
 
-    if (!["generate", "revise"].includes(action)) return json({ error: "Unknown action" }, 400);
+    if (!["generate", "revise", "fromtext"].includes(action)) return json({ error: "Unknown action" }, 400);
 
     const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     const { count } = await service.from("mkt_ai_log").select("id", { count: "exact", head: true }).eq("user_id", user.id).gte("created_at", since);
@@ -255,24 +256,39 @@ Deno.serve(async (req) => {
       goal: c.goal, persona: c.persona, send_date: c.planned_at, audience: c.audience?.label,
       ...c.brief, extra_instructions: String(body.instructions ?? "").slice(0, 3000),
     };
-    const notes = String(body.instructions ?? "").slice(0, 3000);
+    const notes = String(body.instructions ?? "").slice(0, action === "fromtext" ? 20000 : 3000);
     let userMsg: string;
     if (action === "generate") {
       userMsg = `Write this email from scratch.${notes ? `\nMITCHELL'S INSTRUCTIONS (follow every one of these exactly; they override anything else in the brief):\n${notes}` : ""}\nBRIEF:\n${JSON.stringify(brief, null, 1)}`;
-    } else if (action === "revise") {
+    } else if (action === "fromtext") {
+      userMsg = `Mitchell edited the full text of this email himself. Rebuild the email_draft from HIS TEXT below.
+RULES: Use his words EXACTLY as written. Do not rewrite, add, remove, reorder, shorten or "fix" anything; keep his spelling and punctuation. Your only job is to put each piece of his text into the right block.
+- "Subject:" line = subject. "Preview:" line = preheader.
+- The first line after those is the hero headline; a short paragraph right after it, before any section heading, is the hero sub.
+- A short line without ending punctuation that introduces a section = heading.
+- Lines starting with "1.", "2."... = one steps block (drop the numbers).
+- A line wrapped like >> text << = callout.
+- [Product: name] followed by text = product block; use the matching handle from the CURRENT DRAFT (or the catalog) and his text as the blurb.
+- [Button: label] = button block; keep the url from the CURRENT DRAFT's button.
+- A line starting with "—" = signoff. Anything else = text blocks (blank line = new paragraph).
+If he deleted something, leave it out. If he names a catalog product in a new [Product: ...] line, add that product block.
+rationale: write "Rebuilt from Mitchell's edited text."
+CURRENT DRAFT (for product handles and links only):\n${JSON.stringify({ blocks: c.blocks })}
+HIS TEXT:\n${notes}`;
+    } else {
       userMsg = `Mitchell reviewed the current draft and wrote the critique below. Apply EVERY point in it exactly as he says, even if that means rewriting most of the email. His critique overrides the brief and your earlier choices. If he points you to something on the website, use the MTBLOCK.COM PAGES above. Then give the rest a quick polish.\nMITCHELL'S CRITIQUE:\n${notes || "(tighten and improve it)"}\nBRIEF:\n${JSON.stringify(brief, null, 1)}\nCURRENT DRAFT:\n${JSON.stringify({ subject: c.subject, preheader: c.preheader, blocks: c.blocks })}`;
-
     }
 
     const first = await callClaude(system, [{ role: "user", content: userMsg }], apiKey);
-    const second = await proofread(system, first.draft, apiKey);
+    const second = action === "fromtext" ? { draft: first.draft, usage: {} as any } : await proofread(system, first.draft, apiKey);
     const draft = second.draft, usage = {
       input_tokens: (first.usage.input_tokens ?? 0) + (second.usage.input_tokens ?? 0) + (first.usage.cache_read_input_tokens ?? 0) + (second.usage.cache_read_input_tokens ?? 0) + (first.usage.cache_creation_input_tokens ?? 0) + (second.usage.cache_creation_input_tokens ?? 0),
       output_tokens: (first.usage.output_tokens ?? 0) + (second.usage.output_tokens ?? 0) };
     const d = sanitizeDraft(draft, products);
     const themeKey = kit.default_theme || "black_walnut";
 
-    if (notes) await service.from("mkt_events").insert({ campaign_id: id, actor: user.id, action: action === "revise" ? "critique" : "instructions", detail: { text: notes } });
+    if (notes && action !== "fromtext") await service.from("mkt_events").insert({ campaign_id: id, actor: user.id, action: action === "revise" ? "critique" : "instructions", detail: { text: notes } });
+    if (action === "fromtext") await service.from("mkt_events").insert({ campaign_id: id, actor: user.id, action: "text_edited", detail: {} });
     await service.from("mkt_ai_log").insert({
       user_id: user.id, campaign_id: id, action, model: MODEL,
       input_tokens: usage.input_tokens ?? 0,

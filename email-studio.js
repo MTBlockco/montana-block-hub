@@ -317,11 +317,9 @@ function paintEditor() {
       </div>` : ""}
       ${c.html ? `<div class="card stack" id="textcard">
         <h2>Edit the text</h2>
-        <div class="small muted">Change any words directly, then press Save. Blank line = new paragraph. Steps: one per line.</div>
-        <div><label>Subject line</label><input data-f="subject" value="${esc(c.subject ?? "")}" ${dis}></div>
-        <div><label>Preview text (shows after the subject in the inbox)</label><input data-f="preheader" value="${esc(c.preheader ?? "")}" ${dis}></div>
-        ${textFields(c.blocks ?? [], dis)}
-        <button class="btn primary" id="b-savetext" ${dis}>Save text</button>
+        <div class="small muted">The whole email as plain text. Change anything, then press Save and Claude puts it back into the template using your exact words.</div>
+        <textarea id="f-text" rows="${Math.min(40, Math.max(14, emailText(c).split("\n").length + 2))}" style="font-size:.95rem;line-height:1.5" ${dis}>${esc(emailText(c))}</textarea>
+        <button class="btn primary" id="b-savetext" ${dis}>Save</button>
       </div>` : ""}
     </div>
     <div class="col-right">
@@ -336,36 +334,28 @@ function paintEditor() {
   paintApproveBox();
 }
 
-// Every piece of wording in the email, as plain editable boxes (products and links stay as Claude picked them).
-const TEXT_LABEL = { heading: "Section heading", text: "Paragraphs", callout: "Callout (tan line)", note: "Small print", signoff: "Sign-off", quote: "Quote" };
-function textFields(blocks, dis) {
-  const box = (i, k, label, val, rows) => `<div><label>${esc(label)}</label>${rows > 1
-    ? `<textarea data-i="${i}" data-k="${k}" rows="${rows}" ${dis}>${esc(val ?? "")}</textarea>`
-    : `<input data-i="${i}" data-k="${k}" value="${esc(val ?? "")}" ${dis}>`}</div>`;
-  const rowsFor = (t) => Math.min(12, 2 + Math.ceil(String(t ?? "").length / 60) + (String(t ?? "").match(/\n/g) || []).length);
-  return blocks.map((b, i) => {
-    if (b.type === "hero") return box(i, "headline", "Headline", b.headline, 1) + box(i, "sub", "Intro under the headline", b.sub, rowsFor(b.sub));
-    if (b.type === "steps") return box(i, "items", "Steps (one per line)", (b.items ?? []).join("\n"), Math.max(3, (b.items ?? []).length + rowsFor((b.items ?? []).join(" ")) - 1));
-    if (b.type === "button") return box(i, "label", "Link button text", b.label, 1);
-    if (b.type === "product") return box(i, "blurb", `Product note (${ed.products?.[b.handle]?.title ?? b.handle})`, b.blurb, rowsFor(b.blurb));
-    if (TEXT_LABEL[b.type]) return box(i, "text", TEXT_LABEL[b.type], b.text, ["heading", "callout", "signoff"].includes(b.type) ? 1 : rowsFor(b.text));
-    return "";
-  }).join("");
+// The whole email as one block of plain text for Mitchell to edit. Claude rebuilds the layout from it on Save.
+function emailText(c) {
+  const out = [`Subject: ${c.subject ?? ""}`, `Preview: ${c.preheader ?? ""}`, ""];
+  for (const b of c.blocks ?? []) {
+    if (b.type === "hero") { out.push(b.headline ?? ""); if (b.sub) out.push("", b.sub); }
+    else if (b.type === "steps") (b.items ?? []).forEach((it, i) => out.push(`${i + 1}. ${it}`));
+    else if (b.type === "callout") out.push(`>> ${b.text ?? ""} <<`);
+    else if (b.type === "product") out.push(`[Product: ${ed.products?.[b.handle]?.title ?? b.handle}]`, ...(b.blurb ? [b.blurb] : []));
+    else if (b.type === "products") out.push(`[Products: ${(b.handles ?? []).map((h) => ed.products?.[h]?.title ?? h).join(" | ")}]`);
+    else if (b.type === "button") out.push(`[Button: ${b.label ?? "Shop now"}]`);
+    else if (b.type === "divider") out.push("---");
+    else if (b.text) out.push(b.text);
+    out.push("");
+  }
+  return out.join("\n").trim();
 }
 
 function wireEditor() {
   const c = ed.c;
-  q("#b-savetext")?.addEventListener("click", async () => {
-    if (c.status === "approved" && !confirm("This email is approved. Editing the text cancels the approval. Continue?")) return;
-    const card = q("#textcard");
-    card.querySelectorAll("[data-f]").forEach((el) => (c[el.dataset.f] = el.value.trim()));
-    card.querySelectorAll("[data-i]").forEach((el) => {
-      const b = c.blocks[Number(el.dataset.i)]; if (!b) return;
-      b[el.dataset.k] = el.dataset.k === "items" ? el.value.split("\n").map((x) => x.trim()).filter(Boolean) : el.value.trim();
-    });
-    await rerender();
-    toast("Text saved. The preview is updated.");
-    paintEditor();
+  q("#b-savetext")?.addEventListener("click", () => {
+    if ((q("#f-text")?.value ?? "").trim() === emailText(c)) return toast("No changes to save.");
+    write("fromtext");
   });
   q("#f-goal")?.addEventListener("change", (e) => { c.goal = e.target.value; save({ goal: c.goal }); });
   q("#f-date")?.addEventListener("change", (e) => { c.planned_at = fromLocalInput(e.target.value); save({ planned_at: c.planned_at }); });
@@ -416,10 +406,10 @@ async function write(action) {
   if (!guard() || ed.busy) return;
   const c = ed.c;
   if (c.status === "approved" && !confirm("This email is approved. Rewriting it cancels the approval. Continue?")) return;
-  const notes = action === "revise" ? (q("#f-crit")?.value ?? "") : "";
+  const notes = action === "revise" ? (q("#f-crit")?.value ?? "") : action === "fromtext" ? (q("#f-text")?.value ?? "") : "";
   ed.busy = true;
-  const btns = $root.querySelectorAll("#b-gen,#b-rev"); btns.forEach((b) => (b.disabled = true));
-  const label = { generate: "Claude is writing and proofreading the email… (about a minute)", revise: "Claude is making your changes and proofreading… (about a minute)" }[action];
+  const btns = $root.querySelectorAll("#b-gen,#b-rev,#b-savetext"); btns.forEach((b) => (b.disabled = true));
+  const label = { generate: "Claude is writing and proofreading the email… (about a minute)", revise: "Claude is making your changes and proofreading… (about a minute)", fromtext: "Putting your text back into the email…" }[action];
   q(".frame").insertAdjacentHTML("afterbegin", `<div class="working"><div class="spinner"></div>${label}</div>`);
   try {
     if (c.status === "approved") { await H.sb.rpc("mkt_unapprove", { p_id: c.id }); c.status = "draft"; }
@@ -433,7 +423,7 @@ async function write(action) {
     await save({ subject_options: c.subject_options, subject: c.subject, preheader: c.preheader, blocks: c.blocks, hero_svg: null, hero_url: null, brief: { ...c.brief, _products: ed.products }, theme: c.theme });
     await rerender();
     await H.sb.from("mkt_events").insert({ campaign_id: c.id, action: "generated", detail: { action } });
-    toast("Draft is ready for review.");
+    toast(action === "fromtext" ? "Saved. The preview shows your text." : "Draft is ready for review.");
     renderEditor(c.id);
   } catch (e) {
     toast(e.message);
